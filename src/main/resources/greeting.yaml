@@ -1,0 +1,6 @@
+apiVersion: timtest.storage.zende.sk/v1alpha1
+kind: Greeting
+metadata:
+  name: greet1
+spec:
+  name: everyone!
