@@ -31,7 +31,6 @@ class Controller[T<:ObjectResource](operator: Operator[T])(
     )
     val inputs = listAndWatch[T](listOptions)
 
-    val dispatcher = new Dispatcher[T](operator)
-    dispatcher.run(inputs)
+    Dispatcher[T](operator).flatMap(_.run(inputs))
   }
 }
