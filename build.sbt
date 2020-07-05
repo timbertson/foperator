@@ -1,4 +1,4 @@
-scalaVersion in ThisBuild := "2.12.8"
+scalaVersion in ThisBuild := "2.13.2"
 
 lazy val root = (project in file(".")).settings(
   name := "foperator",
