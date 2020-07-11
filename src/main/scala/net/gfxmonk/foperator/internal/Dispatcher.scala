@@ -5,7 +5,9 @@ import monix.eval.Task
 import monix.execution.Scheduler
 import monix.reactive.Observable
 import net.gfxmonk.foperator._
+import net.gfxmonk.foperator.internal.ResourceLoop.ErrorCount
 import skuber.ObjectResource
+import scala.concurrent.duration._
 
 object Dispatcher {
   trait PermitScope {

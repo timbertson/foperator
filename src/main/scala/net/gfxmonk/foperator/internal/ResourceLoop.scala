@@ -4,6 +4,7 @@ import monix.eval.Task
 import monix.execution.{Cancelable, Scheduler}
 import net.gfxmonk.foperator.Reconciler
 import net.gfxmonk.foperator.internal.Dispatcher.PermitScope
+import net.gfxmonk.foperator.internal.ResourceLoop.ErrorCount
 
 import scala.concurrent.Promise
 import scala.concurrent.duration._
@@ -27,7 +28,8 @@ object ResourceLoop {
   def manager[T<:AnyRef](refreshInterval: FiniteDuration)(implicit scheduler: Scheduler): Manager[ResourceLoop] =
     new Manager[ResourceLoop] {
       override def create[T](initial: T, reconciler: Reconciler[T], permitScope: PermitScope): ResourceLoop[T] = {
-        new ResourceLoop[T](initial, reconciler, refreshInterval, permitScope)
+        def backoffTime(errorCount: ErrorCount) = Math.pow(1.2, errorCount.value.toDouble).seconds
+        new ResourceLoop[T](initial, reconciler, refreshInterval, permitScope, backoffTime)
       }
       override def update[T](loop: ResourceLoop[T], current: T): Task[Unit] = loop.update(current)
       override def destroy[T](loop: ResourceLoop[T]): Task[Unit] = Task(loop.cancel())
@@ -40,6 +42,7 @@ class ResourceLoop[T](
                        reconciler: Reconciler[T],
                        refreshInterval: FiniteDuration,
                        permitScope: PermitScope,
+                       backoffTime: ErrorCount => FiniteDuration,
                      )(implicit scheduler: Scheduler) extends Cancelable {
   import ResourceLoop._
   @volatile private var state: T = initial
@@ -69,7 +72,7 @@ class ResourceLoop[T](
 
       case Failure(error) => {
         val nextCount = errorCount.increment
-        val delay = Math.pow(1.2, nextCount.value.toDouble).seconds
+        val delay = backoffTime(nextCount).min(refreshInterval)
         println(s"Reconcile failed: ${error}, retrying in ${delay.toSeconds}s")
         scheduleReconcile(nextCount, delay)
       }
