@@ -33,6 +33,7 @@ object Dispatcher {
 
 class Dispatcher[Loop[_], T<:ObjectResource](reconciler: Reconciler[T], manager: ResourceLoop.Manager[Loop], permitScope: Dispatcher.PermitScope) {
   def run(input: Observable[Input[T]])(implicit scheduler: Scheduler): Task[Unit] = {
+
     input.mapAccumulate(Map.empty[Id,Loop[T]]) { (map:Map[Id,Loop[T]], input) =>
       val result: (Map[Id,Loop[T]], Task[Unit]) = input match {
         case Input.HardDeleted(resource) => {
@@ -55,3 +56,28 @@ class Dispatcher[Loop[_], T<:ObjectResource](reconciler: Reconciler[T], manager:
   }
 }
 
+
+class Dispatcher2[Loop[_], T<:ObjectResource](reconciler: Reconciler[T], manager: ResourceLoop.Manager[Loop], permitScope: Dispatcher.PermitScope) {
+  def run(input: Observable[Input[T]])(implicit scheduler: Scheduler): Task[Unit] = {
+
+    input.mapAccumulate(Map.empty[Id,Loop[T]]) { (map:Map[Id,Loop[T]], input) =>
+      val result: (Map[Id,Loop[T]], Task[Unit]) = input match {
+        case Input.HardDeleted(resource) => {
+          val id = Id.of(resource)
+          (map - id, map.get(id).map(manager.destroy).getOrElse(Task.unit))
+        }
+        case Input.Updated(resource) => {
+          val id = Id.of(resource)
+          map.get(id) match {
+            case Some(loop) => (map, manager.update(loop, resource))
+            case None => {
+              val loop = manager.create[T](resource, reconciler, permitScope)
+              (map.updated(id, loop), Task.unit)
+            }
+          }
+        }
+      }
+      result
+    }.mapEval(identity).completedL
+  }
+}
