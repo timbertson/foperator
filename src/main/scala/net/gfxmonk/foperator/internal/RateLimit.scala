@@ -36,7 +36,7 @@ object RateLimit {
   def initialState(capacity: Long) = State(capacity, Queue.empty)
 }
 
-class RateLimit(config: RateLimitConfig)(implicit scheduler: Scheduler) extends Cancelable {
+class RateLimit(config: RateLimitConfig)(implicit scheduler: Scheduler) extends Cancelable with Logging {
   private val state = Atomic(RateLimit.initialState(config.capacity))
   private val thread = Observable.intervalWithFixedDelay(config.interval)
     .mapEval(_ => release)
@@ -46,7 +46,7 @@ class RateLimit(config: RateLimitConfig)(implicit scheduler: Scheduler) extends 
   def take: Task[Unit] = Task {
     val task = state.transformAndExtract(_.take)
     if(!task.eq(Task.unit)) {
-      println("rateLimit: block")
+      logger.debug("rateLimit: block")
     }
   }
 

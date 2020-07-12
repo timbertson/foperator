@@ -1,7 +1,6 @@
 scalaVersion in ThisBuild := "2.13.2"
 
-lazy val root = (project in file(".")).settings(
-  name := "foperator",
+val common = Seq(
   version := "1.0",
 
   organization := "net.gfxmonk",
@@ -11,7 +10,39 @@ lazy val root = (project in file(".")).settings(
     "io.skuber" %% "skuber" % "2.4.0",
     "io.monix" %% "monix" % "3.1.0",
     "org.typelevel" %% "cats-core" % "2.1.0",
-    "org.slf4j" % "slf4j-simple" % "1.6.2",
-    "org.scalatest" %% "scalatest" % "3.1.0" % Test
+    "org.slf4j" % "slf4j-api" % "1.7.9",
+    "org.scalatest" %% "scalatest" % "3.1.0" % Test // TODO pick one, this or minitest
   )
 )
+
+lazy val lib = (project in file("."))
+  .settings(common)
+  .settings(
+    name := "foperator"
+  )
+
+lazy val testkit = (project in file("testkit"))
+  .settings(common)
+  .settings(
+    name := "foperator-testkit",
+    libraryDependencies ++= Seq(
+    ),
+  ).dependsOn(lib)
+
+lazy val sample = (project in file("sample"))
+  .settings(common)
+  .settings(
+    name := "foperator-sample",
+    libraryDependencies ++= Seq(
+      "ch.qos.logback" % "logback-classic" % "1.2.3",
+      "com.typesafe.akka" %% "akka-slf4j" % "2.5.29",
+      "io.monix" %% "minitest" % "2.8.2" % "test",
+      "io.monix" %% "minitest-laws" % "2.8.2" % "test",
+    ),
+    testFrameworks += new TestFramework("minitest.runner.Framework"),
+    packMain := Map(
+      "simple-mutator" -> "net.gfxmonk.foperator.sample.SimpleWithMutator",
+      "advanced-mutator" -> "net.gfxmonk.foperator.sample.AdvancedWithMutator",
+      "mutator-test" -> "net.gfxmonk.foperator.sample.MutatorTest",
+    ),
+  ).dependsOn(lib, testkit).enablePlugins(PackPlugin)

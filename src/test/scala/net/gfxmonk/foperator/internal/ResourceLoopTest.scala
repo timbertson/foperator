@@ -5,15 +5,15 @@ import monix.eval.Task
 import monix.execution.schedulers.TestScheduler
 import net.gfxmonk.foperator.internal.Dispatcher.PermitScope
 import net.gfxmonk.foperator.internal.ResourceLoop.ErrorCount
-import net.gfxmonk.foperator.{ReconcileResult, Reconciler}
+import net.gfxmonk.foperator.{ReconcileResult, Reconciler, ResourceState}
 
 import scala.collection.mutable.ListBuffer
 import scala.concurrent.duration._
 
-class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec {
+class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec with Logging {
   implicit val scheduler = TestScheduler()
 
-  class Context(initial: String, delegate: (Int, String) => Task[ReconcileResult[String]]) {
+  class Context(initial: String, delegate: (Int, ResourceState[String]) => Task[ReconcileResult]) {
     val reconcileDuration = 1.second
     val refreshInterval = 5.seconds
 
@@ -23,8 +23,8 @@ class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec {
 
     private var iteration = 0
 
-    val reconciler = new Reconciler[String] {
-      override def reconcile(resource: String): Task[ReconcileResult[String]] = {
+    val reconciler = new Reconciler[ResourceState[String]] {
+      override def reconcile(resource: ResourceState[String]): Task[ReconcileResult] = {
         for {
           _ <- Task(append("reconcile start"))
           _ <- Task.sleep(reconcileDuration)
@@ -57,12 +57,19 @@ class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec {
       backoffTime
     }
 
-    val loop = new ResourceLoop(initial, reconciler, refreshInterval, permitScope, calculateBackoff)
+    val loop = new ResourceLoop(
+      Task.pure(Some(ResourceState.Active(initial))),
+      reconciler,
+      Some(refreshInterval),
+      permitScope,
+      calculateBackoff,
+      onError = t => Task(logger.error("loop failed", t))
+    )
   }
 
-  def defaultReconciler[T](iteration: Int, item: T): Task[ReconcileResult[T]] = Task.pure(ReconcileResult.Continue)
+  def defaultReconciler[T](iteration: Int, item: ResourceState[T]): Task[ReconcileResult] = Task.pure(ReconcileResult.Ok)
 
-  def withContext(initial: String, delegate: (Int, String) => Task[ReconcileResult[String]] = defaultReconciler[String] _)(body: Context => Unit): Unit = {
+  def withContext(initial: String, delegate: (Int, ResourceState[String]) => Task[ReconcileResult] = defaultReconciler[String] _)(body: Context => Unit): Unit = {
     val ctx = new Context(initial, delegate)
     try {
       body(ctx)
@@ -84,6 +91,10 @@ class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec {
     }
   }
 
+  it("skips reconcile when the item has diasappeared") {
+    // TODO set to None
+  }
+
   it("is cancelable") {
     withContext("initial") { ctx =>
       scheduler.tick(ctx.reconcileDuration/2)
@@ -96,9 +107,9 @@ class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec {
   }
 
   it("backs off on failure") {
-    def reconcile(iteration: Int, value: String) = iteration match {
+    def reconcile(iteration: Int, value: ResourceState[String]) = iteration match {
       case 1|2 => Task.raiseError(new RuntimeException(s"failed ${iteration}"))
-      case 3 => Task.pure(ReconcileResult.Continue)
+      case 3 => Task.pure(ReconcileResult.Ok)
       case 4 => Task.raiseError(new RuntimeException(s"failed ${iteration}"))
     }
     withContext("initial", delegate = reconcile) { ctx =>

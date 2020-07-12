@@ -1,64 +1,67 @@
 package net.gfxmonk.foperator
 
-import akka.stream.ActorMaterializer
-import akka.stream.scaladsl.Sink
+import cats.{Applicative, Eq}
+import cats.implicits._
 import monix.eval.Task
-import monix.reactive.Observable
 import play.api.libs.json.Format
-import skuber.api.client.{EventType, KubernetesClient, LoggingContext}
-import skuber.json.format._
+import skuber.api.client.{KubernetesClient, LoggingContext}
 import skuber.{ObjectResource, _}
+import cats.implicits._
+import net.gfxmonk.foperator.internal.Logging
+import net.gfxmonk.foperator.implicits._
 
-import scala.util.{Failure, Random, Success}
+import scala.concurrent.Future
+import scala.util.{Failure, Success}
 
-sealed trait Update[+St]
-object Update {
-  case class Status[St](status: St) extends Update[St]
-  case class Metadata(metadata: ObjectMeta) extends Update[Nothing]
+sealed trait Update[T<:ObjectResource, +Sp, +St] {
+  def initial: T
+  def id: Id[T] = Id.of(initial)
+  override def toString: Finalizer = s"${this.getClass.getSimpleName}(${id}, ...)"
 }
 
-object Operations {
-  def listAndWatch[T<: ObjectResource](listOptions: ListOptions)(
-    implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext, materializer: ActorMaterializer,
-    client: KubernetesClient
-  ): Observable[Input[T]] = {
-    implicit val lrf = ListResourceFormat[T]
-    val initial: Observable[ListResource[T]] = {
-      Observable.fromFuture(client.listWithOptions[ListResource[T]](listOptions))
-    }
-    // TODO: check that watch ignores status updates to avoid loops (does it relate to status subresource?)
-    initial.concatMap { listResource =>
-      val source =
-        client.watchWithOptions[T](listOptions.copy(
-          resourceVersion = Some(listResource.resourceVersion),
-          timeoutSeconds = Some(30) // TODO
-        ))
+object Update {
+  // A subset of update that excludes Unchanged
+  sealed trait Change[T<:ObjectResource, +Sp, +St] extends Update[T,Sp,St]
 
-      // shuffle so that if there's a poison pill we'll eventually service other records
-      val initials = Observable.fromIterable(Random.shuffle(listResource.toList))
-        .map(Input.Updated.apply)
+  case class Spec[T<:ObjectResource, Sp](initial: T, spec: Sp) extends Change[T, Sp, Nothing]
+  case class Status[T<:ObjectResource, St](initial: T, status: St) extends Change[T, Nothing, St]
+  case class Metadata[T<:ObjectResource](initial: T, metadata: ObjectMeta) extends Change[T, Nothing, Nothing]
+  case class Unchanged[T<:ObjectResource](initial: T) extends Update[T, Nothing, Nothing]
 
-      val deltas = Observable.fromReactivePublisher(source.runWith(Sink.asPublisher(fanout=false)))
-        .map { event =>
-          event._type match {
-            case EventType.ERROR => ???
-            case EventType.DELETED => Input.HardDeleted(event._object)
-            case EventType.ADDED | EventType.MODIFIED => Input.Updated(event._object)
-          }
-        }
-
-      initials ++ deltas
+  // TODO can we use something more general than CustomResource
+  def minimal[Sp,St](update: CustomResourceUpdate[Sp, St])(implicit eqSp: Eq[Sp], eqSt: Eq[St]): CustomResourceUpdate[Sp, St] = {
+    update match {
+      case Status(initial, status) => if(initial.status.exists(_ === status)) Unchanged(initial) else update
+      case Spec(initial, spec) => if(initial.spec === spec) Unchanged(initial) else update
+      case Metadata(initial, metadata) => if(initial.metadata === metadata) Unchanged(initial) else update
+      case Unchanged(initial) => Unchanged(initial)
     }
   }
 
-  def isDeleted[T<:ObjectResource](resource: T): Boolean = resource.metadata.deletionTimestamp.isDefined
+//  def fold[T<:ObjectResource,Sp,St,R](update: Update[T,Sp,St])(passthru: T => R)(apply: Change[T,Sp,St] => R): R = update match {
+//    case Update.Unchanged(initial) => passthru(initial)
+//    case other:Change[T,Sp,St] => apply(other)
+//  }
+//
+  def change[Sp,St](update: CustomResourceUpdate[Sp,St])(implicit eqSp: Eq[Sp], eqSt: Eq[St]):
+    Either[CustomResource[Sp,St],Change[CustomResource[Sp,St],Sp,St]] = minimal(update) match {
+    case Update.Unchanged(initial) => Left(initial)
+    case other:Change[CustomResource[Sp,St],Sp,St] => Right(other)
+  }
+//
+//  def applyWith[F[_], T<:ObjectResource,Sp,St](update: Update[T,Sp,St])(apply: Change[T,Sp,St] => F[T])(implicit F: Applicative[F]): F[T] = {
+//    fold(update)(F.pure)(apply)
+//  }
+}
 
+object Operations extends Logging {
   def write[O<:ObjectResource](withMetadata: (O, ObjectMeta) => O)(resource: O)(implicit client: KubernetesClient, fmt: Format[O], rd: ResourceDefinition[O], lc: LoggingContext): Task[O] = {
+    Task(logger.debug(s"Writing ${resource.name}")) >>
     Task.deferFuture(client.create(resource)).materialize.flatMap {
       case Success(resource) => Task.pure(resource)
       case Failure(err: K8SException) if err.status.code.contains(409) => {
         // resource exists, update based on the current resource version
-        Task.deferFuture(client.get[O](resource.name)).flatMap { existing =>
+        Task.deferFuture(client.getInNamespace[O](resource.name, resource.namespace)).flatMap { existing =>
           val currentVersion = existing.metadata.resourceVersion
           val newMeta = resource.metadata.copy(resourceVersion = currentVersion)
           val updatedObj = withMetadata(resource, newMeta)
@@ -66,22 +69,41 @@ object Operations {
         }
       }
       case Failure(err) => Task.raiseError(err)
+    }.map { result =>
+      logger.debug(s"Wrote ${resource.name} v${resource.metadata.resourceVersion}")
+      result
     }
   }
 
-  def applyUpdate[Sp,St](original: CustomResource[Sp,St], update: Update[St])(
+  def apply[Sp,St](update: Update[CustomResource[Sp,St], Sp, St])(
     implicit fmt: Format[CustomResource[Sp,St]],
     rd: ResourceDefinition[CustomResource[Sp,St]],
     st: HasStatusSubresource[CustomResource[Sp,St]],
-    client: KubernetesClient
+    client: KubernetesClient,
+    eqSp: Eq[Sp],
+    eqSt: Eq[St],
   ): Task[CustomResource[Sp,St]] = {
-    implicit val hasStatus: HasStatusSubresource[CustomResource[Sp,St]] = st // TODO why is this needed?
-    Task.deferFuture(update match {
-      // TODO no updateMetadata? Is metadata not a subresource?
-      case Update.Metadata(meta) => client.update(original.withMetadata(meta))
-      case Update.Status(st) => client.updateStatus(original.withStatus(st))
+    type Resource = CustomResource[Sp,St]
+    implicit val hasStatus: HasStatusSubresource[Resource] = st // TODO why is this needed?
+    Update.change(update).fold(Task.pure, { change =>
+      logger.debug(s"Applying update ${change}")
+      Task.fromFuture(change match {
+        // TODO no updateMetadata? Is metadata not a subresource?
+        case Update.Metadata(original, meta) => client.update(original.withMetadata(meta))
+        case Update.Spec(original, sp) => client.update(original.copy(spec = sp))
+        case Update.Status(original, st) => client.updateStatus(original.withStatus(st))
+      })
     })
   }
+
+  def applyMany[Sp,St](updates: List[Update[CustomResource[Sp,St], Sp, St]])(
+    implicit fmt: Format[CustomResource[Sp,St]],
+    rd: ResourceDefinition[CustomResource[Sp,St]],
+    st: HasStatusSubresource[CustomResource[Sp,St]],
+    client: KubernetesClient,
+    eqSp: Eq[Sp],
+    eqSt: Eq[St],
+  ): Task[Unit] = {
+    updates.traverse(update => Operations.apply(update)).void
+  }
 }
-
-

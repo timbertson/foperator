@@ -1,0 +1,6 @@
+apiVersion: sample.foperator.gfxmonk.net/v1alpha1
+kind: Greeting
+metadata:
+  name: greet-smiths
+spec:
+  surname: Smith

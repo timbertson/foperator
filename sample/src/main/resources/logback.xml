@@ -1,0 +1,38 @@
+<configuration>
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%highlight(%level) %cyan(%logger): %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="SAMPLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%highlight(%level) %cyan(%logger): %yellow(%msg) %n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="MUTATOR" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%highlight(%level) %cyan(%logger): %green(%msg) %n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT" />
+    </root>
+
+    <logger name="net.gfxmonk.foperator.sample" additivity="false">
+        <appender-ref ref="SAMPLE" />
+    </logger>
+
+    <logger name="net.gfxmonk.foperator.sample.Mutator" additivity="false">
+        <appender-ref ref="MUTATOR" />
+    </logger>
+    <logger name="net.gfxmonk.foperator.sample.MutatorTest" additivity="false">
+        <appender-ref ref="MUTATOR" />
+    </logger>
+
+<!--    <logger name="net.gfxmonk.foperator" level="TRACE"/>-->
+
+    <logger name="skuber.api" level="WARN"/>
+</configuration>
