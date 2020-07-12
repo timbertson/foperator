@@ -1,9 +1,10 @@
 package net.gfxmonk.foperator
 
 import akka.stream.ActorMaterializer
-import net.gfxmonk.foperator.internal.Dispatcher
+import net.gfxmonk.foperator.internal.{Dispatcher, Id}
 import monix.eval.Task
 import monix.execution.Scheduler
+import monix.reactive.Observable
 import play.api.libs.json.Format
 import skuber.api.client.{KubernetesClient, LoggingContext}
 import skuber.{LabelSelector, ListOptions, ObjectResource, ResourceDefinition}
@@ -11,26 +12,21 @@ import skuber.{LabelSelector, ListOptions, ObjectResource, ResourceDefinition}
 import scala.concurrent.duration._
 
 case class Operator[T](
-                        labelSelector: Option[LabelSelector] = None,
                         finalizer: Option[Finalizer[T]] = None,
                         reconciler: Reconciler[T],
                         refreshInterval: FiniteDuration = 300.seconds,
                         concurrency: Int = 1
                       )
 
-class Controller[T<:ObjectResource](operator: Operator[T])(
+class Controller[T<:ObjectResource](operator: Operator[T], tracker: ResourceTracker[T], updateTriggers: List[Observable[Id]] = Nil)(
   implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext,
   scheduler: Scheduler,
   materializer: ActorMaterializer,
   client: KubernetesClient
 ) {
-  import Operations._
   def run: Task[Unit] = {
-    val listOptions = ListOptions(
-      labelSelector = operator.labelSelector,
-    )
-    val inputs = listAndWatch[T](listOptions)
-
-    Dispatcher[T](operator).flatMap(_.run(inputs))
+    val updateInputs: List[Observable[Input[Id]]] = updateTriggers.map(obs => obs.map(Input.Updated.apply))
+    val allInputs: Observable[Input[Id]] = Observable.from(tracker.ids :: updateInputs).merge
+    Dispatcher[T](operator, tracker).flatMap(_.run(allInputs))
   }
 }

@@ -62,7 +62,9 @@ object SampleMain extends TaskApp {
       }}
     )
 
-    val controller = new Controller[Hello](operator)
-    install() >> controller.run.map(_ => ExitCode.Success)
+    install() >> ResourceTracker.all[Hello].use { tracker =>
+      val controller = new Controller[Hello](operator, tracker)
+      controller.run.map(_ => ExitCode.Success)
+    }
   }
 }

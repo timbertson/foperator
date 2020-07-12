@@ -2,6 +2,7 @@ package net.gfxmonk.foperator.internal
 
 import skuber.ObjectResource
 
+// TODO: phantom type param for Id
 case class Id(namespace: String, name: String)
 
 object Id {
