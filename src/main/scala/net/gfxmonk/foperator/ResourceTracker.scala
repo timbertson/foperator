@@ -11,7 +11,6 @@ import monix.execution.{Ack, Cancelable, Scheduler}
 import monix.reactive.observers.Subscriber
 import monix.reactive.{Consumer, Observable}
 import net.gfxmonk.foperator.ResourceTracker.IdSubscriber
-import net.gfxmonk.foperator.internal.Id
 import play.api.libs.json.Format
 import skuber.api.client.{EventType, KubernetesClient, LoggingContext, WatchEvent}
 import skuber.json.format.ListResourceFormat
@@ -59,7 +58,7 @@ object ResourceTracker {
     override def use[R](consume: ResourceTracker[T] => Task[R]): Task[R] = consume(instance)
   }
 
-  private [foperator] type IdSubscriber = Input[Id] => Task[Unit]
+  private [foperator] type IdSubscriber[T] = Input[Id[T]] => Task[Unit]
 
   private def resource[T<: ObjectResource](listOptions: ListOptions)(
     implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext, materializer: ActorMaterializer,
@@ -92,10 +91,10 @@ object ResourceTracker {
  */
 class ResourceTracker[T<: ObjectResource] private (initial: List[T], updates: Observable[WatchEvent[T]])(implicit scheduler: Scheduler)
   extends AutoCloseable {
-  private val state: Atomic[Map[Id,T]] = Atomic(initial.map(obj => Id.of(obj) -> obj).toMap)
-  private val listeners: MVar[Task, Set[IdSubscriber]] = MVar[Task].of(Set.empty[IdSubscriber]).runSyncUnsafe()
+  private val state: Atomic[Map[Id[T],T]] = Atomic(initial.map(obj => Id.of(obj) -> obj).toMap)
+  private val listeners: MVar[Task, Set[IdSubscriber[T]]] = MVar[Task].of(Set.empty[IdSubscriber[T]]).runSyncUnsafe()
 
-  private def transformSubscribers(fn: Set[IdSubscriber] => Set[IdSubscriber]): Task[Unit] = {
+  private def transformSubscribers(fn: Set[IdSubscriber[T]] => Set[IdSubscriber[T]]): Task[Unit] = {
     listeners.take.flatMap(subs => listeners.put(fn(subs)))
   }
 
@@ -118,10 +117,10 @@ class ResourceTracker[T<: ObjectResource] private (initial: List[T], updates: Ob
     }
   }).runToFuture
 
-  def ids: Observable[Input[Id]] = {
-    new Observable[Input[Id]] {
-      override def unsafeSubscribeFn(subscriber: Subscriber[Input[Id]]): Cancelable = {
-        def emit(id: Input[Id]): Task[Unit] = {
+  def ids: Observable[Input[Id[T]]] = {
+    new Observable[Input[Id[T]]] {
+      override def unsafeSubscribeFn(subscriber: Subscriber[Input[Id[T]]]): Cancelable = {
+        def emit(id: Input[Id[T]]): Task[Unit] = {
           Task.deferFuture(subscriber.onNext(id)).flatMap {
             case Ack.Continue => Task.unit
             case Ack.Stop => cancel
@@ -143,8 +142,8 @@ class ResourceTracker[T<: ObjectResource] private (initial: List[T], updates: Ob
     }
   }
 
-  def relatedIds(fn: T => List[Id]): Observable[Id] = {
-    def handle(obj: Option[T]): Observable[Id] = {
+  def relatedIds(fn: T => List[Id[T]]): Observable[Id[T]] = {
+    def handle(obj: Option[T]): Observable[Id[T]] = {
       Observable.from(obj.map(fn).getOrElse(Nil))
     }
     ids.map {
@@ -153,9 +152,9 @@ class ResourceTracker[T<: ObjectResource] private (initial: List[T], updates: Ob
     }.concat
   }
 
-  def all(): Map[Id, T] = state.get
+  def all(): Map[Id[T], T] = state.get
 
-  def get(id: Id): Option[T] = all.get(id)
+  def get(id: Id[T]): Option[T] = all.get(id)
 
   override def close(): Unit = future.cancel()
 }

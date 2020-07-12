@@ -57,7 +57,7 @@ class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec {
       backoffTime
     }
 
-    val loop = new ResourceLoop(initial, reconciler, refreshInterval, permitScope, calculateBackoff)
+    val loop = new ResourceLoop(Task.pure(Some(initial)), reconciler, refreshInterval, permitScope, calculateBackoff)
   }
 
   def defaultReconciler[T](iteration: Int, item: T): Task[ReconcileResult[T]] = Task.pure(ReconcileResult.Continue)
@@ -82,6 +82,10 @@ class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec {
       scheduler.tick(ctx.refreshInterval + (ctx.reconcileDuration/2))
       assert(ctx.log == reconcileFull ++ reconcileStart)
     }
+  }
+
+  it("skips reconcile when the item has diasappeared") {
+    // TODO set to None
   }
 
   it("is cancelable") {

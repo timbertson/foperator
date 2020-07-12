@@ -1,0 +1,7 @@
+apiVersion: timtest.storage.gfxmonk.net/v1alpha1
+kind: Person
+metadata:
+  name: john-smith
+spec:
+  firstName: Tim
+  surname: Smith

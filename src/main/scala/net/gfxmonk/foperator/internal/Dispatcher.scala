@@ -31,13 +31,13 @@ object Dispatcher {
 // Fans out a single stream of Input[Id] to a Loop instance per Id
 class Dispatcher[Loop[_], T<:ObjectResource](
   reconciler: Reconciler[T],
-  getResource: Id => Option[T],
+  getResource: Id[T] => Option[T],
   manager: ResourceLoop.Manager[Loop],
   permitScope: Dispatcher.PermitScope
 ) {
-  def run(input: Observable[Input[Id]])(implicit scheduler: Scheduler): Task[Unit] = {
-    input.mapAccumulate(Map.empty[Id,Loop[T]]) { (map:Map[Id,Loop[T]], input) =>
-      val result: (Map[Id,Loop[T]], Task[Unit]) = input match {
+  def run(input: Observable[Input[Id[T]]])(implicit scheduler: Scheduler): Task[Unit] = {
+    input.mapAccumulate(Map.empty[Id[T],Loop[T]]) { (map:Map[Id[T],Loop[T]], input) =>
+      val result: (Map[Id[T],Loop[T]], Task[Unit]) = input match {
         case Input.HardDeleted(id) => {
           (map - id, map.get(id).map(manager.destroy).getOrElse(Task.unit))
         }
