@@ -1,7 +1,6 @@
 apiVersion: sample.foperator.gfxmonk.net/v1alpha1
-kind: Person
+kind: Greeting
 metadata:
-  name: tim-smith
+  name: greet-smyths
 spec:
-  firstName: Tim
-  surname: Smith
+  surname: Smyth

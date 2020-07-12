@@ -13,14 +13,8 @@ import skuber.api.client.KubernetesClient
 import skuber.apiextensions.CustomResourceDefinition
 import skuber.{CustomResource, ObjectMeta, ResourceDefinition, ResourceSpecification, k8sInit}
 
-object Implicits {
-  implicit val system = ActorSystem()
-  implicit val materializer = ActorMaterializer()
-  implicit val dispatcher = system.dispatcher
-  implicit val client = k8sInit
-}
-
 object Models {
+  /** Greeting */
   case class GreetingSpec(name: Option[String], surname: Option[String])
   case class GreetingStatus(message: String, people: List[String])
   implicit def greetingStatusEq = Eq.fromUniversalEquals[GreetingStatus]
@@ -32,7 +26,7 @@ object Models {
   implicit val st: skuber.HasStatusSubresource[Greeting] = CustomResource.statusMethodsEnabler[Greeting]
 
   val greetingSpec = CustomResourceDefinition.Spec(
-    apiGroup="timtest.storage.gfxmonk.net",
+    apiGroup="sample.foperator.gfxmonk.net",
     version="v1alpha1",
     names=Names(
       plural = "greetings",
@@ -45,7 +39,7 @@ object Models {
   ).copy(subresources = Some(ResourceSpecification.Subresources().withStatusSubresource()))
 
   val greetingCrd = CustomResourceDefinition(
-    metadata=ObjectMeta(name="greetings.timtest.storage.gfxmonk.net"),
+    metadata=ObjectMeta(name="greetings.sample.foperator.gfxmonk.net"),
     spec=greetingSpec)
 
   implicit val greetingRd: ResourceDefinition[Greeting] = ResourceDefinition(greetingCrd)
@@ -56,7 +50,7 @@ object Models {
 
   type Person = CustomResource[PersonSpec,PersonStatus]
   val personSpec = CustomResourceDefinition.Spec(
-    apiGroup="timtest.storage.gfxmonk.net",
+    apiGroup="sample.foperator.gfxmonk.net",
     version="v1alpha1",
     names=Names(
       plural = "people",
@@ -69,7 +63,7 @@ object Models {
   ).copy(subresources = Some(ResourceSpecification.Subresources().withStatusSubresource()))
 
   val personCrd = CustomResourceDefinition(
-    metadata=ObjectMeta(name="greetings.timtest.storage.gfxmonk.net"),
+    metadata=ObjectMeta(name="people.sample.foperator.gfxmonk.net"),
     spec=personSpec)
 
   implicit val personRd: ResourceDefinition[Person] = ResourceDefinition(personCrd)
@@ -78,6 +72,13 @@ object Models {
   implicit val personSpecFmt = Json.format[PersonSpec]
   implicit val personFmt = CustomResource.crFormat[PersonSpec,PersonStatus]
   implicit val personHasStatus: skuber.HasStatusSubresource[Person] = CustomResource.statusMethodsEnabler[Person]
+}
+
+object Implicits {
+  implicit val system = ActorSystem()
+  implicit val materializer = ActorMaterializer()
+  implicit val dispatcher = system.dispatcher
+  implicit val client = k8sInit
 }
 
 object SimpleMain extends TaskApp {
