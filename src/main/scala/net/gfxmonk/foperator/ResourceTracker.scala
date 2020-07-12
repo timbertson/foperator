@@ -142,8 +142,8 @@ class ResourceTracker[T<: ObjectResource] private (initial: List[T], updates: Ob
     }
   }
 
-  def relatedIds(fn: T => List[Id[T]]): Observable[Id[T]] = {
-    def handle(obj: Option[T]): Observable[Id[T]] = {
+  def relatedIds[R](fn: T => Iterable[Id[R]]): Observable[Id[R]] = {
+    def handle(obj: Option[T]): Observable[Id[R]] = {
       Observable.from(obj.map(fn).getOrElse(Nil))
     }
     ids.map {

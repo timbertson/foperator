@@ -1,5 +1,6 @@
 package net.gfxmonk.foperator
 
+import cats.Eq
 import skuber.ObjectResource
 
 import scala.util.{Failure, Success, Try}
@@ -7,6 +8,10 @@ import scala.util.{Failure, Success, Try}
 case class Id[T](namespace: String, name: String)
 
 object Id {
+  object Implicits {
+    implicit def IdEq[T]: Eq[Id[T]] = Eq.fromUniversalEquals[Id[T]]
+  }
+
   def of[T<:ObjectResource](resource: T): Id[T] = Id(
     namespace = resource.namespace,
     name = resource.name)
@@ -19,5 +24,8 @@ object Id {
     case _ => Failure(new IllegalArgumentException(s"Not a valid object ID: $value"))
   }
 
-  def unsafeCreate[T<:ObjectResource](_cls: Class[T], namespace: String, name: String): Id[T] = Id[T](namespace, name)
+  def unsafeCreate[T<:ObjectResource](_cls: Class[T], namespace: String, name: String): Id[T] = {
+    _cls match { case _ => () } // ignore unused
+    Id[T](namespace, name)
+  }
 }
