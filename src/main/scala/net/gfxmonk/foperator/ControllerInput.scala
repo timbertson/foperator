@@ -3,7 +3,14 @@ package net.gfxmonk.foperator
 import monix.reactive.Observable
 
 class ControllerInput[T] private (mirror: ResourceMirror[T], ids: Observable[Input[Id[T]]]) {
-  def withResourceTrigger[R](mirror: ResourceMirror[R])(extractIds: R => Iterable[Id[T]]): ControllerInput[T] = {
+  def withActiveResourceTrigger[R](mirror: ResourceMirror[R])(extractIds: R => Iterable[Id[T]]): ControllerInput[T] = {
+    withResourceTrigger(mirror) {
+      case ResourceState.Active(value) => extractIds(value)
+      case ResourceState.SoftDeleted(_) => Nil
+    }
+  }
+
+  def withResourceTrigger[R](mirror: ResourceMirror[R])(extractIds: ResourceState[R] => Iterable[Id[T]]): ControllerInput[T] = {
     withIdTrigger[R](mirror) {
       case Input.HardDeleted(_) => Nil
       case Input.Updated(id) => {
@@ -24,7 +31,7 @@ class ControllerInput[T] private (mirror: ResourceMirror[T], ids: Observable[Inp
   // used by Controller, not typically client code
   def inputs: Observable[Input[Id[T]]] = Observable(mirror.ids, ids).merge
 
-  def get(id: Id[T]): Option[T] = mirror.get(id)
+  def get(id: Id[T]): Option[ResourceState[T]] = mirror.get(id)
 }
 
 object ControllerInput {

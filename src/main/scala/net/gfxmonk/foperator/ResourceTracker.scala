@@ -20,8 +20,18 @@ trait ResourceUpdates[T] {
 }
 
 trait ResourceMirror[T] extends ResourceUpdates[T] {
-  def get(id: Id[T]): Option[T]
-  def all: Map[Id[T], T]
+  def all(): Map[Id[T], ResourceState[T]]
+
+  def active(): Map[Id[T], T] = all().mapFilter(ResourceState.active)
+
+  def get(id: Id[T]): Option[ResourceState[T]] = {
+    all.get(id)
+  }
+
+  def getActive(id: Id[T]): Option[T] = get(id) match {
+    case Some(ResourceState.Active(value)) => Some(value)
+    case Some(ResourceState.SoftDeleted(_)) | None => None
+  }
 }
 
 trait ResourceMirrorProvider[T<: ObjectResource] {
@@ -98,7 +108,7 @@ object ResourceMirrorImpl {
 private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: Observable[WatchEvent[T]])(implicit scheduler: Scheduler)
   extends AutoCloseable with ResourceMirror[T] {
   import ResourceMirrorImpl._
-  private val state: Atomic[Map[Id[T],T]] = Atomic(initial.map(obj => Id.of(obj) -> obj).toMap)
+  private val state = Atomic(initial.map(obj => Id.of(obj) -> ResourceState.of(obj)).toMap)
   private val listeners: MVar[Task, Set[IdSubscriber[T]]] = MVar[Task].of(Set.empty[IdSubscriber[T]]).runSyncUnsafe()
 
   private def transformSubscribers(fn: Set[IdSubscriber[T]] => Set[IdSubscriber[T]]): Task[Unit] = {
@@ -114,7 +124,7 @@ private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: 
         Input.HardDeleted(id)
       }
       case EventType.ADDED | EventType.MODIFIED => {
-        state.transform(_.updated(id, event._object))
+        state.transform(_.updated(id, ResourceState.of(event._object)))
         Input.Updated(id)
       }
     }
@@ -149,8 +159,8 @@ private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: 
     }
   }
 
-  def relatedIds[R](fn: T => Iterable[Id[R]]): Observable[Id[R]] = {
-    def handle(obj: Option[T]): Observable[Id[R]] = {
+  def relatedIds[R](fn: ResourceState[T] => Iterable[Id[R]]): Observable[Id[R]] = {
+    def handle(obj: Option[ResourceState[T]]): Observable[Id[R]] = {
       Observable.from(obj.map(fn).getOrElse(Nil))
     }
     ids.map {
@@ -159,9 +169,7 @@ private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: 
     }.concat
   }
 
-  def all(): Map[Id[T], T] = state.get
-
-  def get(id: Id[T]): Option[T] = all.get(id)
+  override def all(): Map[Id[T], ResourceState[T]] = state.get
 
   override def close(): Unit = future.cancel()
 }

@@ -116,9 +116,31 @@ object AdvancedMain extends TaskApp {
   import Implicits._
   import Models._
 
+  val finalizer = s"AdvancedMain.${greetingSpec.apiGroup}"
+
   def install()(implicit client: KubernetesClient) = {
     SimpleMain.install() >>
     Operations.write[CustomResourceDefinition]((res, meta) => res.copy(metadata=meta))(personCrd).void
+  }
+
+  // should this greeting match this person?
+  private def matches(person: Person, greeting: Greeting) = greeting.spec.surname === Some(person.spec.surname)
+
+  // does this greeting's status currently reference this person?
+  private def references(person: Person, greeting: Greeting) = !greeting.status.map(_.people).getOrElse(Nil).contains_(person.metadata.name)
+
+  // every update can set a new status and remove finalizers
+  // (finalizers are automatically added for all referenced people)
+  case class GreetingUpdate(
+    status: Option[GreetingStatus],
+    removeFinalizers: List[Person]
+  )
+
+
+  object GreetingUpdate {
+    def run(update: GreetingUpdate): Task[ReconcileResult[Greeting]] = {
+      Task.raiseError(new RuntimeException("TODO"))
+    }
   }
 
   private def runWith(
@@ -127,10 +149,28 @@ object AdvancedMain extends TaskApp {
   ) = {
     val operator = Operator[Greeting](
       reconciler = Reconciler.updater { greeting => Task.pure {
-        greeting.spec.surname match {
+
+        // when a person is soft-deleted, we schedule a reconcile against
+        // all active greetings. After they reconcile, they will have dropped the
+        // person from their status.
+
+        // So whenever we see a deleted resource with no greetings referencing it,
+        // we can clear our finalizer from it
+        val allowDelete = peopleMirror.all().mapFilter(ResourceState.awaitingFinalize(finalizer)).values.flatMap { person =>
+          val stillGreeting = greetingsMirror.active().values.filter { greeting =>
+            greeting.status.map(_.people).getOrElse(Nil).contains(person.metadata.name)
+          }
+          if (stillGreeting.isEmpty) {
+            List(person)
+          } else {
+            Nil
+          }
+        }.toList
+
+        val newStatus = greeting.spec.surname match {
           case None => None
           case Some(surname) => {
-            val people = peopleMirror.all.values.filter { person =>
+            val people = peopleMirror.active().values.filter { person =>
               person.spec.surname == surname
             }.toList.sortBy(_.spec.firstName)
 
@@ -141,32 +181,25 @@ object AdvancedMain extends TaskApp {
             if (greeting.status === Some(expected)) {
               None
             } else {
-              Some(Update.Status(expected))
+              Some(expected)
             }
           }
         }
+
+        GreetingUpdate(newStatus, allowDelete)
       }}
     )
 
     val controllerInput = ControllerInput(greetingsMirror).withResourceTrigger(peopleMirror) { person =>
-      // should this greeting match this person?
-      def matchesPerson(greeting: Greeting) = greeting.spec.surname === Some(person.spec.surname)
-
-      // does this greeting's status currently reference this person?
-      def referencesPerson(greeting: Greeting) = !greeting.status.map(_.people).getOrElse(Nil).contains_(person.metadata.name)
-
       // Given a Person has changed, figure out what greetings might need an update
-      val predicate = if (person.metadata.deletionTimestamp.isDefined) {
-        // soft-deleted
-        { greeting: Greeting => referencesPerson(greeting) }
-      } else {
-        { greeting: Greeting =>
-          val shouldAdd = matchesPerson(greeting) && !referencesPerson(greeting)
-          val shouldRemove = !matchesPerson(greeting) && referencesPerson(greeting)
-          shouldAdd || shouldRemove
-        }
+      val predicate = person match {
+        case ResourceState.SoftDeleted(person) => greeting: Greeting => references(person, greeting)
+        case ResourceState.Active(person) => greeting: Greeting =>
+            val shouldAdd = matches(person, greeting) && !references(person, greeting)
+            val shouldRemove = !matches(person, greeting) && references(person, greeting)
+            shouldAdd || shouldRemove
       }
-      greetingsMirror.all.values.filter(predicate).map(Id.of)
+      greetingsMirror.active().values.filter(predicate).map(Id.of)
     }
 
     new Controller[Greeting](operator, controllerInput).run.map(_ => ExitCode.Success)

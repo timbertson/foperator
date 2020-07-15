@@ -74,7 +74,7 @@ class ResourceLoop[T](
     result.flatMap {
       case Success(result) => {
         val delay = result match {
-          case ReconcileResult.RetryAfter(duration) => duration
+          case ReconcileResult.RetryAfter(delay) => delay
           case _ => refreshInterval
         }
         println(s"Reconcile completed successfully, retrying in ${delay.toSeconds}s")
