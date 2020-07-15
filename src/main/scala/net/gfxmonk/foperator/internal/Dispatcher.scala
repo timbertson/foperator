@@ -12,7 +12,7 @@ object Dispatcher {
     def withPermit[A](task: Task[A]): Task[A]
   }
 
-  def apply[T<:ObjectResource](operator: Operator[T], resourceTracker: ResourceTracker[T])(implicit scheduler: Scheduler): Task[Dispatcher[ResourceLoop,T]] = {
+  def apply[T<:ObjectResource](operator: Operator[T], input: ControllerInput[T])(implicit scheduler: Scheduler): Task[Dispatcher[ResourceLoop,T]] = {
     val reconciler = Reconciler.sequence[T](
       operator.finalizer.map(_.reconciler).toList ++
         List(Reconciler.ignoreDeleted[T], operator.reconciler)
@@ -23,7 +23,7 @@ object Dispatcher {
       val permitScope = new PermitScope {
         override def withPermit[A](task: Task[A]): Task[A] = semaphore.withPermit(task)
       }
-      new Dispatcher[ResourceLoop, T](reconciler, resourceTracker.get, manager, permitScope)
+      new Dispatcher[ResourceLoop, T](reconciler, input.get, manager, permitScope)
     }
   }
 }

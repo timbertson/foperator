@@ -104,8 +104,8 @@ object SimpleMain extends TaskApp {
       }}
     )
 
-    install() >> ResourceTracker.all[Greeting].use { tracker =>
-      val controller = new Controller[Greeting](operator, tracker)
+    install() >> ResourceMirror.all[Greeting].use { mirror =>
+      val controller = new Controller[Greeting](operator, ControllerInput(mirror))
       controller.run.map(_ => ExitCode.Success)
     }
   }
@@ -122,15 +122,15 @@ object AdvancedMain extends TaskApp {
   }
 
   private def runWith(
-    greetingTracker: ResourceTracker[Greeting],
-    personTracker: ResourceTracker[Person]
+                       greetingsMirror: ResourceMirror[Greeting],
+                       peopleMirror: ResourceMirror[Person]
   ) = {
     val operator = Operator[Greeting](
       reconciler = Reconciler.updater { greeting => Task.pure {
         greeting.spec.surname match {
           case None => None
           case Some(surname) => {
-            val people = personTracker.all.values.filter { person =>
+            val people = peopleMirror.all.values.filter { person =>
               person.spec.surname == surname
             }.toList.sortBy(_.spec.firstName)
 
@@ -148,34 +148,34 @@ object AdvancedMain extends TaskApp {
       }}
     )
 
-    // Given a new person state, generate the list of greetings which
-    // need to be reconciled
-    def relatedGreetings(person: Person): Iterable[Id[Greeting]] = {
+    val controllerInput = ControllerInput(greetingsMirror).withResourceTrigger(peopleMirror) { person =>
       // should this greeting match this person?
       def matchesPerson(greeting: Greeting) = greeting.spec.surname === Some(person.spec.surname)
 
       // does this greeting's status currently reference this person?
       def referencesPerson(greeting: Greeting) = !greeting.status.map(_.people).getOrElse(Nil).contains_(person.metadata.name)
 
-      greetingTracker.all.values.filter { greeting =>
-        val shouldAdd = matchesPerson(greeting) && !referencesPerson(greeting)
-        val shouldRemove = !matchesPerson(greeting) && referencesPerson(greeting)
-        shouldAdd || shouldRemove
-      }.map(Id.of)
+      // Given a Person has changed, figure out what greetings might need an update
+      val predicate = if (person.metadata.deletionTimestamp.isDefined) {
+        // soft-deleted
+        { greeting: Greeting => referencesPerson(greeting) }
+      } else {
+        { greeting: Greeting =>
+          val shouldAdd = matchesPerson(greeting) && !referencesPerson(greeting)
+          val shouldRemove = !matchesPerson(greeting) && referencesPerson(greeting)
+          shouldAdd || shouldRemove
+        }
+      }
+      greetingsMirror.all.values.filter(predicate).map(Id.of)
     }
 
-    val updateForPersonChanges = personTracker.relatedIds(relatedGreetings)
-    val controller = new Controller[Greeting](
-      operator,
-      greetingTracker,
-      updateTriggers = List(updateForPersonChanges))
-    controller.run.map(_ => ExitCode.Success)
+    new Controller[Greeting](operator, controllerInput).run.map(_ => ExitCode.Success)
   }
 
   override def run(args: List[String]): Task[ExitCode] = {
-    install() >> ResourceTracker.all[Greeting].use { greetingTracker =>
-      ResourceTracker.all[Person].use { personTracker =>
-        runWith(greetingTracker, personTracker)
+    install() >> ResourceMirror.all[Greeting].use { greetings =>
+      ResourceMirror.all[Person].use { people =>
+        runWith(greetings, people)
       }
     }
   }

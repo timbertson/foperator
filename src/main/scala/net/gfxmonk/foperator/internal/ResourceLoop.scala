@@ -66,15 +66,19 @@ class ResourceLoop[T](
       // ensures we never miss a change (but we could double-process a concurrent change)
       modified = Promise[Unit]()
       currentState.flatMap {
-        case None => Task.pure(Success(ReconcileResult.Ignore))
+        case None => Task.pure(Success(ReconcileResult.Skip))
         case Some(obj) => reconciler.reconcile(obj).materialize
       }
     }
 
     result.flatMap {
-      case Success(_) => {
-        println("Reconcile completed successfully")
-        scheduleReconcile(ErrorCount.zero, refreshInterval)
+      case Success(result) => {
+        val delay = result match {
+          case ReconcileResult.RetryAfter(duration) => duration
+          case _ => refreshInterval
+        }
+        println(s"Reconcile completed successfully, retrying in ${delay.toSeconds}s")
+        scheduleReconcile(ErrorCount.zero, delay)
       }
 
       case Failure(error) => {

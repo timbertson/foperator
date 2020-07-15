@@ -6,11 +6,14 @@ import play.api.libs.json.Format
 import skuber.{CustomResource, HasStatusSubresource, ObjectResource, ResourceDefinition}
 import skuber.api.client.KubernetesClient
 
+import scala.concurrent.duration.FiniteDuration
+
 sealed trait ReconcileResult[+T]
 object ReconcileResult {
   case class Modified[T](result: T) extends ReconcileResult[T]
   case object Continue extends ReconcileResult[Nothing] // try next reconciler
-  case object Ignore extends ReconcileResult[Nothing] // filtered, stop processing
+  case object Skip extends ReconcileResult[Nothing] // stop processing this update
+  case class RetryAfter(duration: FiniteDuration) extends ReconcileResult[Nothing] // stop processing this update
 }
 
 trait Reconciler[T] {
@@ -27,7 +30,7 @@ class UpdateReconciler[T,Op](val operation: T => Task[Option[Op]], val apply: (T
 class FilterReconciler[T](val predicate: T => Task[Boolean]) extends Reconciler[T] {
   override def reconcile(resource: T): Task[ReconcileResult[T]] = predicate(resource).map {
     case true => ReconcileResult.Continue
-    case false => ReconcileResult.Ignore
+    case false => ReconcileResult.Skip
   }
 }
 
@@ -39,7 +42,7 @@ object Reconciler {
         case head::tail => head.reconcile(resource).flatMap {
           case ReconcileResult.Continue => loop(resource, tail)
           case ReconcileResult.Modified(newResource) => loop(newResource, tail)
-          case ReconcileResult.Ignore => Task.pure(ReconcileResult.Ignore)
+          case result @ (ReconcileResult.RetryAfter(_) | ReconcileResult.Skip) => Task.pure(result)
         }
       }
     }
