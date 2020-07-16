@@ -11,41 +11,38 @@ import scala.concurrent.duration.FiniteDuration
 sealed trait ReconcileResult[+T]
 object ReconcileResult {
   case class Modified[T](result: T) extends ReconcileResult[T]
+  case class RetryAfter(delay: FiniteDuration) extends ReconcileResult[Nothing] // stop processing this update
   case object Continue extends ReconcileResult[Nothing] // try next reconciler
   case object Skip extends ReconcileResult[Nothing] // stop processing this update
-  case class RetryAfter(delay: FiniteDuration) extends ReconcileResult[Nothing] // stop processing this update
 }
 
-trait Reconciler[T] {
-  def reconcile(resource: T): Task[ReconcileResult[T]]
-//
-//  def activeOnly(implicit ev: T <:< ObjectResource): Reconciler[ResourceState[T]] = {
-//    val self = this
-//    new Reconciler[ResourceState[T]] {
-//      override def reconcile(resource: ResourceState[T]): Task[ReconcileResult[ResourceState[T]]] = {
-//        resource match {
-//          case ResourceState.Active(value) => self.reconcile(value).map {
-//            case ReconcileResult.Modified(value) => {
-//              ReconcileResult.Modified(ResourceState.of[T](value))
-//            }
-//            case ReconcileResult.Continue => ReconcileResult.Continue
-//            case ReconcileResult.Skip => ReconcileResult.Skip
-//            case ReconcileResult.RetryAfter(delay) => ReconcileResult.RetryAfter(delay)
-//          }
-//        }
-//      }
-//    }
-//  }
+trait Reconciler[A,B] {
+  // Note: UniformReconciler[T] is a handy alias for the common case of Reconciler[T,T]
+  def reconcile(resource: A): Task[ReconcileResult[B]]
+
+  def andThen[C](next: Reconciler[B,C]): Reconciler[A, C] = {
+    val self = this
+    new Reconciler[A,C] {
+      override def reconcile(resource: A): Task[ReconcileResult[C]] = {
+        self.reconcile(resource).flatMap {
+          case ReconcileResult.Modified(b) => next.reconcile(b)
+          case ReconcileResult.RetryAfter(delay) => Task.pure(ReconcileResult.RetryAfter(delay))
+          case ReconcileResult.Skip => Task.pure(ReconcileResult.Skip)
+          case ReconcileResult.Continue => Task.pure(ReconcileResult.Continue)
+        }
+      }
+    }
+  }
 }
 
-class UpdateReconciler[T,Op](val operation: T => Task[Option[Op]], val apply: (T, Op) => Task[T]) extends Reconciler[T] {
-  override def reconcile(resource: T): Task[ReconcileResult[T]] = operation(resource).flatMap {
-    case Some(update) => apply(resource, update).map(ReconcileResult.Modified.apply)
+class UpdateReconciler[T,R,Op](val operation: T => Task[Option[Op]], val apply: (T, Op) => Task[ReconcileResult[R]]) extends Reconciler[T,R] {
+  override def reconcile(resource: T): Task[ReconcileResult[R]] = operation(resource).flatMap {
+    case Some(update) => apply(resource, update)
     case None => Task.pure(ReconcileResult.Continue)
   }
 }
 
-class FilterReconciler[T](val predicate: T => Task[Boolean]) extends Reconciler[T] {
+class FilterReconciler[T](val predicate: T => Task[Boolean]) extends UniformReconciler[T] {
   override def reconcile(resource: T): Task[ReconcileResult[T]] = predicate(resource).map {
     case true => ReconcileResult.Continue
     case false => ReconcileResult.Skip
@@ -53,46 +50,37 @@ class FilterReconciler[T](val predicate: T => Task[Boolean]) extends Reconciler[
 }
 
 object Reconciler {
-  def sequence[T](reconcilers: List[Reconciler[T]]): Reconciler[T] = {
-    def loop(resource: T, reconcilers: List[Reconciler[T]]): Task[ReconcileResult[T]] = {
-      reconcilers match {
-        case Nil => Task.pure(ReconcileResult.Continue)
-        case head::tail => head.reconcile(resource).flatMap {
-          case ReconcileResult.Continue => loop(resource, tail)
-          case ReconcileResult.Modified(newResource) => loop(newResource, tail)
-          case result @ (ReconcileResult.RetryAfter(_) | ReconcileResult.Skip) => Task.pure(result)
-        }
-      }
-    }
-    resource => loop(resource, reconcilers)
-  }
-
-  def apply[T](fn: T => Task[ReconcileResult[T]]): Reconciler[T] = {
+  def make[T,R](fn: T => Task[ReconcileResult[R]]): Reconciler[T,R] = {
     (resource: T) => fn(resource)
   }
 
-  def updater[Sp,St](fn: CustomResource[Sp,St] => Task[Option[Update[St]]])
-                    (implicit fmt: Format[CustomResource[Sp,St]],
-                     rd: ResourceDefinition[CustomResource[Sp,St]],
-                     st: HasStatusSubresource[CustomResource[Sp,St]],
-                     client: KubernetesClient
-                    ): UpdateReconciler[CustomResource[Sp,St], Update[St]] = {
-    new UpdateReconciler[CustomResource[Sp,St], Update[St]](fn, Operations.applyUpdate)
+  def customResourceUpdater[Sp,St](fn: CustomResource[Sp,St] => Task[Option[Update[St]]])
+                                  (implicit fmt: Format[CustomResource[Sp,St]],
+                                   rd: ResourceDefinition[CustomResource[Sp,St]],
+                                   st: HasStatusSubresource[CustomResource[Sp,St]],
+                                   client: KubernetesClient
+                                  ): UpdateReconciler[CustomResource[Sp,St], CustomResource[Sp,St], Update[St]] = {
+    def apply(res: CustomResource[Sp,St], update: Update[St]): Task[ReconcileResult[CustomResource[Sp,St]]] = {
+      Operations.applyUpdate(res, update).map(ReconcileResult.Modified.apply)
+    }
+    new UpdateReconciler[CustomResource[Sp,St],CustomResource[Sp,St],Update[St]](fn, apply)
+  }
+
+  def updater[T,U](updateFn: (T,U) => Task[ReconcileResult[T]])(reconcileFn: T => Task[Option[U]]): UpdateReconciler[T,T,U] = {
+    new UpdateReconciler[T,T,U](reconcileFn, updateFn)
+  }
+
+  def fullUpdater[T,U](updateFn: (ResourceState[T],U) => Task[ReconcileResult[T]])(reconcileFn: ResourceState[T] => Task[Option[U]]): UpdateReconciler[ResourceState[T],T,U] = {
+    new UpdateReconciler[ResourceState[T],T,U](reconcileFn, updateFn)
   }
 
   def filter[O<:ObjectResource](fn: O => Task[Boolean]): FilterReconciler[O] = new FilterReconciler[O](fn)
-
-  def ignoreDeleted[O<:ObjectResource]: FilterReconciler[O] = {
-    filter[O] { resource =>
-      Task.pure(!Operations.isDeleted(resource))
-    }
-  }
 }
 
 // Finalizer is just a reconciler, but we use a different type because it needs to be
 // injected into the pipeline before deleted objects are filtered out.
-abstract class Finalizer[T](val name: String, val destroy: T => Task[Unit]) {
-  def reconciler: Reconciler[ResourceState[T]]
+abstract class Finalizer[T] {
+  def reconciler: FullReconciler[T]
 }
 
 class CustomResourceFinalizer[Sp,St](name: String, destroy: CustomResource[Sp,St] => Task[Unit])
@@ -101,9 +89,9 @@ class CustomResourceFinalizer[Sp,St](name: String, destroy: CustomResource[Sp,St
                                       rd: ResourceDefinition[CustomResource[Sp,St]],
                                       st: HasStatusSubresource[CustomResource[Sp,St]],
                                       client: KubernetesClient
-                                    ) extends Finalizer[CustomResource[Sp,St]](name, destroy) {
+                                    ) extends Finalizer[CustomResource[Sp,St]] {
 
-  override def reconciler: UpdateReconciler[ResourceState[CustomResource[Sp,St]], Update[St]] = {
+  override def reconciler: UpdateReconciler[ResourceState[CustomResource[Sp,St]], CustomResource[Sp,St], Update[St]] = {
     def reconcileFn(resource: ResourceState[CustomResource[Sp,St]]): Task[Option[Update[St]]] = {
       def finalizers(resource:CustomResource[Sp,St]) = resource.metadata.finalizers.getOrElse(Nil)
       def hasMine(resource:CustomResource[Sp,St]) = finalizers(resource).contains(name)
@@ -133,14 +121,14 @@ class CustomResourceFinalizer[Sp,St](name: String, destroy: CustomResource[Sp,St
       }
     }
 
-    def applyUpdate(resource: ResourceState[CustomResource[Sp,St]], op: Update[St]): Task[ResourceState[CustomResource[Sp,St]]] = {
+    def applyUpdate(resource: ResourceState[CustomResource[Sp,St]], op: Update[St]): Task[ReconcileResult[CustomResource[Sp,St]]] = {
       resource match {
-        case ResourceState.Active(active) => Operations.applyUpdate(active, op).map(ResourceState.of)
-        case ResourceState.SoftDeleted(active) => Operations.applyUpdate(active, op).map(ResourceState.of)
+        case ResourceState.Active(active) => Operations.applyUpdate(active, op).map(ReconcileResult.Modified.apply)
+        case ResourceState.SoftDeleted(deleted) => Operations.applyUpdate(deleted, op).map(_ => ReconcileResult.Skip)
       }
     }
 
-    new UpdateReconciler[ResourceState[CustomResource[Sp,St]], Update[St]](reconcileFn, applyUpdate)
+    Reconciler.fullUpdater(applyUpdate)(reconcileFn)
   }
 }
 
@@ -151,4 +139,11 @@ object Finalizer {
     st: HasStatusSubresource[CustomResource[Sp,St]],
     client: KubernetesClient
   ): CustomResourceFinalizer[Sp,St] = new CustomResourceFinalizer(name, fn)
+
+  def empty[T]: Finalizer[T] = new Finalizer[T] {
+    override def reconciler: Reconciler[ResourceState[T],T] = Reconciler.make {
+      case ResourceState.Active(active) => Task.pure(ReconcileResult.Modified(active))
+      case ResourceState.SoftDeleted(_) => Task.pure(ReconcileResult.Skip)
+    }
+  }
 }

@@ -2,9 +2,9 @@ package net.gfxmonk.foperator.internal
 
 import monix.eval.Task
 import monix.execution.{Cancelable, Scheduler}
-import net.gfxmonk.foperator.{ReconcileResult, Reconciler}
 import net.gfxmonk.foperator.internal.Dispatcher.PermitScope
 import net.gfxmonk.foperator.internal.ResourceLoop.ErrorCount
+import net.gfxmonk.foperator.{FullReconciler, ReconcileResult, ResourceState}
 
 import scala.concurrent.Promise
 import scala.concurrent.duration._
@@ -12,7 +12,7 @@ import scala.util.{Failure, Success}
 
 object ResourceLoop {
   trait Manager[Loop[_]] {
-    def create[T](currentState: Task[Option[T]], reconciler: Reconciler[T], permitScope: PermitScope): Loop[T]
+    def create[T](currentState: Task[Option[ResourceState[T]]], reconciler: FullReconciler[T], permitScope: PermitScope): Loop[T]
     def update[T](loop: Loop[T]): Task[Unit]
     def destroy[T](loop: Loop[T]): Task[Unit]
   }
@@ -27,7 +27,7 @@ object ResourceLoop {
 
   def manager[T<:AnyRef](refreshInterval: FiniteDuration)(implicit scheduler: Scheduler): Manager[ResourceLoop] =
     new Manager[ResourceLoop] {
-      override def create[T](currentState: Task[Option[T]], reconciler: Reconciler[T], permitScope: PermitScope): ResourceLoop[T] = {
+      override def create[T](currentState: Task[Option[ResourceState[T]]], reconciler: FullReconciler[T], permitScope: PermitScope): ResourceLoop[T] = {
         def backoffTime(errorCount: ErrorCount) = Math.pow(1.2, errorCount.value.toDouble).seconds
         new ResourceLoop[T](currentState, reconciler, refreshInterval, permitScope, backoffTime)
       }
@@ -38,8 +38,8 @@ object ResourceLoop {
 
 // Encapsulates the (infinite) reconcile loop for a single resource.
 class ResourceLoop[T](
-                       currentState: Task[Option[T]],
-                       reconciler: Reconciler[T],
+                       currentState: Task[Option[ResourceState[T]]],
+                       reconciler: FullReconciler[T],
                        refreshInterval: FiniteDuration,
                        permitScope: PermitScope,
                        backoffTime: ErrorCount => FiniteDuration

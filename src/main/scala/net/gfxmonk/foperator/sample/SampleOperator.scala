@@ -92,7 +92,7 @@ object SimpleMain extends TaskApp {
 
   override def run(args: List[String]): Task[ExitCode] = {
     val operator = Operator[Greeting](
-      reconciler = Reconciler.updater { greeting => Task.pure {
+      reconciler = Reconciler.customResourceUpdater { greeting => Task.pure {
         val expected = GreetingStatus(s"hello, ${greeting.spec.name.getOrElse("UNKNOWN")}", people = Nil)
 
         // TODO this is a common pattern, pull out?
@@ -136,10 +136,19 @@ object AdvancedMain extends TaskApp {
     removeFinalizers: List[Person]
   )
 
-
   object GreetingUpdate {
-    def run(update: GreetingUpdate): Task[ReconcileResult[Greeting]] = {
-      Task.raiseError(new RuntimeException("TODO"))
+    def run(greeting: Greeting, update: GreetingUpdate): Task[ReconcileResult[Greeting]] = {
+      // first, clear all finalizers
+      val finalizersRemoved = update.removeFinalizers.traverse { (person: Person) =>
+        val meta = ResourceState.withoutFinalizer(finalizer)(person.metadata)
+        Operations.applyUpdate(person, Update.Metadata(meta))
+      }.void
+
+      val updateGreeting = update.status.map { status =>
+        Operations.applyUpdate(greeting, Update.Status(status)).map(ReconcileResult.Modified.apply)
+      }.getOrElse(Task.pure(ReconcileResult.Continue))
+
+      finalizersRemoved >> updateGreeting
     }
   }
 
@@ -148,15 +157,14 @@ object AdvancedMain extends TaskApp {
                        peopleMirror: ResourceMirror[Person]
   ) = {
     val operator = Operator[Greeting](
-      reconciler = Reconciler.updater { greeting => Task.pure {
-
+      reconciler = Reconciler.updater(GreetingUpdate.run) { greeting => Task.pure {
         // when a person is soft-deleted, we schedule a reconcile against
         // all active greetings. After they reconcile, they will have dropped the
         // person from their status.
 
         // So whenever we see a deleted resource with no greetings referencing it,
         // we can clear our finalizer from it
-        val allowDelete = peopleMirror.all().mapFilter(ResourceState.awaitingFinalize(finalizer)).values.flatMap { person =>
+        val allowDelete = peopleMirror.all().mapFilter(ResourceState.awaitingFinalizer(finalizer)).values.flatMap { person =>
           val stillGreeting = greetingsMirror.active().values.filter { greeting =>
             greeting.status.map(_.people).getOrElse(Nil).contains(person.metadata.name)
           }
@@ -186,7 +194,8 @@ object AdvancedMain extends TaskApp {
           }
         }
 
-        GreetingUpdate(newStatus, allowDelete)
+        // we always return an update, the update fn decides whether it's a no-op
+        Some(GreetingUpdate(newStatus, allowDelete))
       }}
     )
 

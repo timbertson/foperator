@@ -1,6 +1,8 @@
 package net.gfxmonk.foperator
 
-import skuber.ObjectResource
+import java.time.{Clock, ZonedDateTime}
+
+import skuber.{CustomResource, ObjectMeta, ObjectResource}
 
 sealed trait ResourceState[T]
 object ResourceState {
@@ -25,8 +27,24 @@ object ResourceState {
     case Active(_) => None
   }
 
-  def awaitingFinalize[T<:ObjectResource](finalizer: String)(res: ResourceState[T]): Option[T] = {
+  def awaitingFinalizer[T<:ObjectResource](finalizer: String)(res: ResourceState[T]): Option[T] = {
     softDeleted(res).filter(_.metadata.finalizers.getOrElse(Nil).contains(finalizer))
+  }
+
+  def withoutFinalizer(finalizer: String)(metadata: ObjectMeta): ObjectMeta = {
+    val newFinalizers = metadata.finalizers.flatMap {
+      case Nil => None
+      case list => list.filterNot(_ == finalizer) match {
+        case Nil => None
+        case list => Some(list)
+      }
+    }
+    metadata.copy(finalizers = newFinalizers)
+  }
+
+  def softDelete(metadata: ObjectMeta): ObjectMeta = {
+    val deletionTimestamp = metadata.deletionTimestamp.getOrElse(ZonedDateTime.now(Clock.systemUTC()))
+    metadata.copy(deletionTimestamp = Some(deletionTimestamp))
   }
 }
 

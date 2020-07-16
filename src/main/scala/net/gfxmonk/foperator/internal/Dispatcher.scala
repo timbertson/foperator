@@ -13,10 +13,9 @@ object Dispatcher {
   }
 
   def apply[T<:ObjectResource](operator: Operator[T], input: ControllerInput[T])(implicit scheduler: Scheduler): Task[Dispatcher[ResourceLoop,T]] = {
-    val reconciler = Reconciler.sequence[T](
-      operator.finalizer.map(_.reconciler).toList ++
-        List(Reconciler.ignoreDeleted[T], operator.reconciler)
-    )
+    val reconciler = operator
+      .finalizer.getOrElse(Finalizer.empty[T]).reconciler
+      .andThen(operator.reconciler)
     val manager = ResourceLoop.manager[T](operator.refreshInterval)
 
     Semaphore[Task](operator.concurrency.toLong).map { semaphore =>
@@ -30,8 +29,8 @@ object Dispatcher {
 
 // Fans out a single stream of Input[Id] to a Loop instance per Id
 class Dispatcher[Loop[_], T<:ObjectResource](
-  reconciler: Reconciler[T],
-  getResource: Id[T] => Option[T],
+  reconciler: FullReconciler[T],
+  getResource: Id[T] => Option[ResourceState[T]],
   manager: ResourceLoop.Manager[Loop],
   permitScope: Dispatcher.PermitScope
 ) {

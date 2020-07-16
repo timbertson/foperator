@@ -14,8 +14,6 @@ object Update {
 }
 
 object Operations {
-  def isDeleted[T<:ObjectResource](resource: T): Boolean = resource.metadata.deletionTimestamp.isDefined
-
   def write[O<:ObjectResource](withMetadata: (O, ObjectMeta) => O)(resource: O)(implicit client: KubernetesClient, fmt: Format[O], rd: ResourceDefinition[O], lc: LoggingContext): Task[O] = {
     Task.deferFuture(client.create(resource)).materialize.flatMap {
       case Success(resource) => Task.pure(resource)
