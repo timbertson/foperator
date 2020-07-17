@@ -4,7 +4,7 @@ import monix.eval.Task
 import monix.execution.{Cancelable, Scheduler}
 import net.gfxmonk.foperator.internal.Dispatcher.PermitScope
 import net.gfxmonk.foperator.internal.ResourceLoop.ErrorCount
-import net.gfxmonk.foperator.{FullReconciler, ReconcileResult, ResourceState}
+import net.gfxmonk.foperator.{ReconcileResult, Reconciler, ResourceState}
 
 import scala.concurrent.Promise
 import scala.concurrent.duration._
@@ -12,7 +12,7 @@ import scala.util.{Failure, Success}
 
 object ResourceLoop {
   trait Manager[Loop[_]] {
-    def create[T](currentState: Task[Option[ResourceState[T]]], reconciler: FullReconciler[T], permitScope: PermitScope): Loop[T]
+    def create[T](currentState: Task[Option[ResourceState[T]]], reconciler: Reconciler[ResourceState[T]], permitScope: PermitScope): Loop[T]
     def update[T](loop: Loop[T]): Task[Unit]
     def destroy[T](loop: Loop[T]): Task[Unit]
   }
@@ -27,7 +27,7 @@ object ResourceLoop {
 
   def manager[T<:AnyRef](refreshInterval: FiniteDuration)(implicit scheduler: Scheduler): Manager[ResourceLoop] =
     new Manager[ResourceLoop] {
-      override def create[T](currentState: Task[Option[ResourceState[T]]], reconciler: FullReconciler[T], permitScope: PermitScope): ResourceLoop[T] = {
+      override def create[T](currentState: Task[Option[ResourceState[T]]], reconciler: Reconciler[ResourceState[T]], permitScope: PermitScope): ResourceLoop[T] = {
         def backoffTime(errorCount: ErrorCount) = Math.pow(1.2, errorCount.value.toDouble).seconds
         new ResourceLoop[T](currentState, reconciler, refreshInterval, permitScope, backoffTime)
       }
@@ -39,7 +39,7 @@ object ResourceLoop {
 // Encapsulates the (infinite) reconcile loop for a single resource.
 class ResourceLoop[T](
                        currentState: Task[Option[ResourceState[T]]],
-                       reconciler: FullReconciler[T],
+                       reconciler: Reconciler[ResourceState[T]],
                        refreshInterval: FiniteDuration,
                        permitScope: PermitScope,
                        backoffTime: ErrorCount => FiniteDuration
@@ -65,8 +65,9 @@ class ResourceLoop[T](
       // the opposite order (state is changed then promise is fulfilled), which
       // ensures we never miss a change (but we could double-process a concurrent change)
       modified = Promise[Unit]()
+      // TODO return Option[Task], then we can log it differently
       currentState.flatMap {
-        case None => Task.pure(Success(ReconcileResult.Skip))
+        case None => Task.pure(Success(ReconcileResult.Ok))
         case Some(obj) => reconciler.reconcile(obj).materialize
       }
     }

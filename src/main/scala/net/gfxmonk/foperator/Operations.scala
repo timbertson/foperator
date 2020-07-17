@@ -5,12 +5,22 @@ import play.api.libs.json.Format
 import skuber.api.client.{KubernetesClient, LoggingContext}
 import skuber.{ObjectResource, _}
 
+import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
-sealed trait Update[+St]
+sealed trait Update[+T, +St]
 object Update {
-  case class Status[St](status: St) extends Update[St]
-  case class Metadata(metadata: ObjectMeta) extends Update[Nothing]
+  case class Status[T, St](initial: T, status: St) extends Update[T, St]
+  case class Metadata[T](initial: T, metadata: ObjectMeta) extends Update[T, Nothing]
+  case class None[T](value: T) extends Update[T,Nothing]
+
+  object Implicits {
+    implicit class UpdateExt[T<:ObjectResource](val resource: T) extends AnyVal {
+      def statusUpdate[St](st: St): Update[T,St] = Update.Status(resource, st)
+      def metadataUpdate(metadata: ObjectMeta): Update[T,Nothing] = Update.Metadata(resource, metadata)
+      def unchanged: Update[T,Nothing] = Update.None(resource)
+    }
+  }
 }
 
 object Operations {
@@ -30,7 +40,7 @@ object Operations {
     }
   }
 
-  def applyUpdate[Sp,St](original: CustomResource[Sp,St], update: Update[St])(
+  def applyUpdate[Sp,St](update: Update[CustomResource[Sp,St], St])(
     implicit fmt: Format[CustomResource[Sp,St]],
     rd: ResourceDefinition[CustomResource[Sp,St]],
     st: HasStatusSubresource[CustomResource[Sp,St]],
@@ -39,8 +49,9 @@ object Operations {
     implicit val hasStatus: HasStatusSubresource[CustomResource[Sp,St]] = st // TODO why is this needed?
     Task.deferFuture(update match {
       // TODO no updateMetadata? Is metadata not a subresource?
-      case Update.Metadata(meta) => client.update(original.withMetadata(meta))
-      case Update.Status(st) => client.updateStatus(original.withStatus(st))
+      case Update.Metadata(original, meta) => client.update(original.withMetadata(meta))
+      case Update.Status(original, st) => client.updateStatus(original.withStatus(st))
+      case Update.None(original) => Future.successful(original)
     })
   }
 }

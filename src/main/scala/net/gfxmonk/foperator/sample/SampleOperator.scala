@@ -7,6 +7,7 @@ import cats.effect.ExitCode
 import cats.implicits._
 import monix.eval.{Task, TaskApp}
 import net.gfxmonk.foperator._
+import net.gfxmonk.foperator.Update.Implicits._ // TODO expose toplevel
 import play.api.libs.json.Json
 import skuber.ResourceSpecification.{Names, Scope}
 import skuber.api.client.KubernetesClient
@@ -97,9 +98,9 @@ object SimpleMain extends TaskApp {
 
         // TODO this is a common pattern, pull out?
         if (greeting.status === Some(expected)) {
-          None
+          greeting.unchanged
         } else {
-          Some(Update.Status(expected))
+          greeting.statusUpdate(expected)
         }
       }}
     )
@@ -132,21 +133,19 @@ object AdvancedMain extends TaskApp {
   // every update can set a new status and remove finalizers
   // (finalizers are automatically added for all referenced people)
   case class GreetingUpdate(
-    status: Option[GreetingStatus],
+    resource: Update[Greeting, GreetingStatus],
     removeFinalizers: List[Person]
   )
 
   object GreetingUpdate {
-    def run(greeting: Greeting, update: GreetingUpdate): Task[ReconcileResult[Greeting]] = {
+    def run(update: GreetingUpdate): Task[ReconcileResult] = {
       // first, clear all finalizers
       val finalizersRemoved = update.removeFinalizers.traverse { (person: Person) =>
         val meta = ResourceState.withoutFinalizer(finalizer)(person.metadata)
-        Operations.applyUpdate(person, Update.Metadata(meta))
+        Operations.applyUpdate(person.metadataUpdate(meta))
       }.void
 
-      val updateGreeting = update.status.map { status =>
-        Operations.applyUpdate(greeting, Update.Status(status)).map(ReconcileResult.Modified.apply)
-      }.getOrElse(Task.pure(ReconcileResult.Continue))
+      val updateGreeting = Operations.applyUpdate(update.resource).map(_ => ReconcileResult.Ok)
 
       finalizersRemoved >> updateGreeting
     }
@@ -178,8 +177,8 @@ object AdvancedMain extends TaskApp {
           }
         }.toList
 
-        val newStatus = greeting.spec.surname match {
-          case None => None
+        val update = greeting.spec.surname match {
+          case None => greeting.unchanged
           case Some(surname) => {
             val people = peopleMirror.active().values.filter { person =>
               person.spec.surname == surname
@@ -190,15 +189,14 @@ object AdvancedMain extends TaskApp {
               people = people.map(_.metadata.name)
             )
             if (greeting.status === Some(expected)) {
-              None
+              greeting.unchanged
             } else {
-              Some(expected)
+              greeting.statusUpdate(expected)
             }
           }
         }
 
-        // we always return an update, the update fn decides whether it's a no-op
-        Some(GreetingUpdate(newStatus, allowDelete))
+        GreetingUpdate(update, allowDelete)
       }}
     )
 

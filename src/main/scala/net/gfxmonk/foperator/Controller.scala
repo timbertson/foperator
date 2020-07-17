@@ -9,7 +9,7 @@ import scala.concurrent.duration._
 
 case class Operator[T](
                         finalizer: Option[Finalizer[T]] = None,
-                        reconciler: UniformReconciler[T],
+                        reconciler: Reconciler[T],
                         refreshInterval: FiniteDuration = 300.seconds,
                         concurrency: Int = 1
                       )
