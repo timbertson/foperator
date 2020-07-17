@@ -164,6 +164,9 @@ object AdvancedMain extends TaskApp {
 
         // So whenever we see a deleted resource with no greetings referencing it,
         // we can clear our finalizer from it
+
+        // TODO this is racey, everyone is going to be trying to remove people.
+        // Should we have two reconcilers, a fan-up and fan-down?
         val allowDelete = peopleMirror.all().mapFilter(ResourceState.awaitingFinalizer(finalizer)).values.flatMap { person =>
           val stillGreeting = greetingsMirror.active().values.filter { greeting =>
             greeting.status.map(_.people).getOrElse(Nil).contains(person.metadata.name)
