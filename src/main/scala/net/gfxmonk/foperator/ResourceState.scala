@@ -2,7 +2,8 @@ package net.gfxmonk.foperator
 
 import java.time.{Clock, ZonedDateTime}
 
-import skuber.{CustomResource, ObjectMeta, ObjectResource}
+import cats.implicits._
+import skuber.{ObjectMeta, ObjectResource}
 
 sealed trait ResourceState[T]
 object ResourceState {
@@ -40,6 +41,15 @@ object ResourceState {
       }
     }
     metadata.copy(finalizers = newFinalizers)
+  }
+
+  def withFinalizer(finalizer: String)(metadata: ObjectMeta): ObjectMeta = {
+    val finalizers = metadata.finalizers.getOrElse(Nil)
+    if (finalizers.contains_(finalizer)) {
+      metadata
+    } else {
+      metadata.copy(finalizers = Some(finalizer :: finalizers))
+    }
   }
 
   def softDelete(metadata: ObjectMeta): ObjectMeta = {

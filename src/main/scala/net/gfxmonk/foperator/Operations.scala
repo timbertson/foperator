@@ -26,9 +26,9 @@ object Update {
 
   object Implicits {
     implicit class UpdateExt[T<:ObjectResource](val resource: T) extends AnyVal {
-      def statusUpdate[St](st: St): Update[T,St] = Update.Status(resource, st)
-      def metadataUpdate(metadata: ObjectMeta): Update[T,Nothing] = Update.Metadata(resource, metadata)
-      def unchanged: Update[T,Nothing] = Update.None(resource)
+      def statusUpdate[St](st: St): Update.Status[T,St] = Update.Status(resource, st)
+      def metadataUpdate(metadata: ObjectMeta): Update.Metadata[T] = Update.Metadata(resource, metadata)
+      def unchanged: Update.None[T] = Update.None(resource)
     }
   }
 }
@@ -72,6 +72,6 @@ object Operations {
     st: HasStatusSubresource[CustomResource[Sp,St]],
     client: KubernetesClient
   ): Task[Unit] = {
-    updates.traverse(applyUpdate).void
+    updates.traverse(update => applyUpdate(update)).void
   }
 }

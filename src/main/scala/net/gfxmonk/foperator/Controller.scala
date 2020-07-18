@@ -8,7 +8,7 @@ import skuber.ObjectResource
 import scala.concurrent.duration._
 
 case class Operator[T](
-                        finalizer: Finalizer[T] = Finalizer.empty,
+                        finalizer: Finalizer[T] = Finalizer.empty[T],
                         reconciler: Reconciler[T] = Reconciler.empty,
                         refreshInterval: FiniteDuration = 300.seconds,
                         concurrency: Int = 1

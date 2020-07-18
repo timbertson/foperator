@@ -18,6 +18,12 @@ object Models {
   /** Greeting */
   case class GreetingSpec(name: Option[String], surname: Option[String])
   case class GreetingStatus(message: String, people: List[String])
+  object GreetingStatus {
+    def peopleIds(update: Update.Status[Greeting, GreetingStatus]): List[Id[Person]] = update.status.people.map { name =>
+      Id.unsafeCreate(classOf[CustomResource[PersonSpec,PersonStatus]], namespace = update.initial.metadata.namespace, name = name)
+    }
+  }
+
   implicit def greetingStatusEq = Eq.fromUniversalEquals[GreetingStatus]
   type Greeting = CustomResource[GreetingSpec,GreetingStatus]
 
@@ -91,18 +97,16 @@ object SimpleMain extends TaskApp {
     Operations.write[CustomResourceDefinition]((res, meta) => res.copy(metadata=meta))(greetingCrd).void
   }
 
+  def expectedStatus(greeting: Greeting): GreetingStatus =
+    GreetingStatus(s"hello, ${greeting.spec.name.getOrElse("UNKNOWN")}", people = Nil)
+
   override def run(args: List[String]): Task[ExitCode] = {
     val operator = Operator[Greeting](
-      reconciler = Reconciler.customResourceUpdater { greeting => Task.pure {
-        val expected = GreetingStatus(s"hello, ${greeting.spec.name.getOrElse("UNKNOWN")}", people = Nil)
-
-        // TODO this is a common pattern, pull out?
-        if (greeting.status === Some(expected)) {
-          greeting.unchanged
-        } else {
-          greeting.statusUpdate(expected)
-        }
-      }}
+      reconciler = Reconciler.customResourceUpdater { greeting =>
+        // Always return the expected status, Reconciler.customResourceUpdater
+        // will make this a no-op without any API calls if it is unchanged.
+        Task.pure(greeting.statusUpdate(expectedStatus(greeting)))
+      }
     )
 
     install() >> ResourceMirror.all[Greeting].use { mirror =>
@@ -130,25 +134,29 @@ object AdvancedMain extends TaskApp {
   // does this greeting's status currently reference this person?
   private def references(person: Person, greeting: Greeting) = !greeting.status.map(_.people).getOrElse(Nil).contains_(person.metadata.name)
 
-  // every update can set a new status and remove finalizers
-  // (finalizers are automatically added for all referenced people)
-  case class GreetingUpdate(
-    resource: Update[Greeting, GreetingStatus],
-    removeFinalizers: List[Person]
-  )
+  // Given a greeting update, apply it to the cluster.
+  // This differs from the default Operations.applyUpdate because
+  // it also installs finalizers on referenced people.
+  private def greetingUpdater(peopleMirror: ResourceMirror[Person])(update: Update.Status[Greeting, GreetingStatus]): Task[ReconcileResult] = {
+    val ids = GreetingStatus.peopleIds(update)
+    val findPeople: Task[List[Person]] = ids.traverse(id => peopleMirror.getActive(id).map(Task.pure).getOrElse(Task.raiseError(new RuntimeException("noooo"))))
 
-  object GreetingUpdate {
-    def run(update: GreetingUpdate): Task[ReconcileResult] = {
-      // first, clear all finalizers
-      val finalizersRemoved = update.removeFinalizers.traverse { (person: Person) =>
-        val meta = ResourceState.withoutFinalizer(finalizerName)(person.metadata)
-        Operations.applyUpdate(person.metadataUpdate(meta))
-      }.void
+    val updateGreeting = Operations.applyUpdate(update).map(_ => ReconcileResult.Ok)
 
-      val updateGreeting = Operations.applyUpdate(update.resource).map(_ => ReconcileResult.Ok)
+    def addFinalizers(people: List[Person]) = people.traverse { person =>
+      val meta = ResourceState.withoutFinalizer(finalizerName)(person.metadata)
+      Operations.applyUpdate(person.metadataUpdate(meta))
+    }.void
 
-      finalizersRemoved >> updateGreeting
-    }
+    for {
+      // Only proceed if referenced people are still found
+      people <- findPeople
+      // update the greeting first
+      result <- updateGreeting
+      // Add finalizers last. If any of these fail due to concurrent modifications,
+      // the reconcile will fail and this greeting will be reconciled again shortly.
+      _ <- addFinalizers(people)
+    } yield result
   }
 
   private def greetingController(
@@ -156,60 +164,32 @@ object AdvancedMain extends TaskApp {
                        peopleMirror: ResourceMirror[Person]
   ): Controller[Greeting] = {
     val operator = Operator[Greeting](
-      reconciler = Reconciler.updater(GreetingUpdate.run) { greeting => Task.pure {
-        // when a person is soft-deleted, we schedule a reconcile against
-        // all active greetings. After they reconcile, they will have dropped the
-        // person from their status.
-
-        // So whenever we see a deleted resource with no greetings referencing it,
-        // we can clear our finalizer from it
-
-        // TODO this is racey, everyone is going to be trying to remove people.
-        // Should we have two reconcilers, a fan-up and fan-down?
-        val allowDelete = peopleMirror.all().mapFilter(ResourceState.awaitingFinalizer(finalizerName)).values.flatMap { person =>
-          val stillGreeting = greetingsMirror.active().values.filter { greeting =>
-            greeting.status.map(_.people).getOrElse(Nil).contains(person.metadata.name)
-          }
-          if (stillGreeting.isEmpty) {
-            List(person)
-          } else {
-            Nil
-          }
-        }.toList
-
-        val update = greeting.spec.surname match {
-          case None => greeting.unchanged
+      reconciler = Reconciler.updater(greetingUpdater(peopleMirror)) { greeting => Task.pure {
+        val newStatus = greeting.spec.surname match {
+          case None => greeting.status.getOrElse(SimpleMain.expectedStatus(greeting))
           case Some(surname) => {
             val people = peopleMirror.active().values.filter { person =>
               person.spec.surname == surname
             }.toList.sortBy(_.spec.firstName)
 
-            val expected = GreetingStatus(
+            GreetingStatus(
               message = s"Hello to ${people.map(_.spec.firstName).mkString(", ")}",
               people = people.map(_.metadata.name)
             )
-            if (greeting.status === Some(expected)) {
-              greeting.unchanged
-            } else {
-              greeting.statusUpdate(expected)
-            }
           }
         }
-
-        GreetingUpdate(update, allowDelete)
+        greeting.statusUpdate(newStatus)
       }}
     )
 
-    val controllerInput = ControllerInput(greetingsMirror).withResourceTrigger(peopleMirror) { person =>
-      // Given a Person has changed, figure out what greetings might need an update
-      val predicate = person match {
-        case ResourceState.SoftDeleted(person) => greeting: Greeting => references(person, greeting)
-        case ResourceState.Active(person) => greeting: Greeting =>
-            val shouldAdd = matches(person, greeting) && !references(person, greeting)
-            val shouldRemove = !matches(person, greeting) && references(person, greeting)
-            shouldAdd || shouldRemove
+    val controllerInput = ControllerInput(greetingsMirror).withActiveResourceTrigger(peopleMirror) { person =>
+      // Given a Person's latest state, figure out what greetings need an update
+      val needsUpdate = { greeting: Greeting =>
+        val shouldAdd = matches(person, greeting) && !references(person, greeting)
+        val shouldRemove = !matches(person, greeting) && references(person, greeting)
+        shouldAdd || shouldRemove
       }
-      greetingsMirror.active().values.filter(predicate).map(Id.of)
+      greetingsMirror.active().values.filter(needsUpdate).map(Id.of)
     }
 
     new Controller[Greeting](operator, controllerInput)
