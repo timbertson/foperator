@@ -13,8 +13,7 @@ object Dispatcher {
   }
 
   def apply[T<:ObjectResource](operator: Operator[T], input: ControllerInput[T])(implicit scheduler: Scheduler): Task[Dispatcher[ResourceLoop,T]] = {
-    val finalizer = operator.finalizer.getOrElse(Finalizer.empty[T])
-    val reconciler = Finalizer.reconciler(finalizer, operator.reconciler)
+    val reconciler = Finalizer.reconciler(operator.finalizer, operator.reconciler)
     val manager = ResourceLoop.manager[T](operator.refreshInterval)
 
     Semaphore[Task](operator.concurrency.toLong).map { semaphore =>

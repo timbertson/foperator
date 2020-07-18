@@ -13,12 +13,16 @@ object ReconcileResult {
   case object Ok extends ReconcileResult
 }
 
-trait Reconciler[T] {
+trait Reconciler[-T] {
   def reconcile(resource: T): Task[ReconcileResult]
 }
 
 class UpdateReconciler[T,Op](val operation: T => Task[Op], val apply: Op => Task[ReconcileResult]) extends Reconciler[T] {
   override def reconcile(resource: T): Task[ReconcileResult] = operation(resource).flatMap(apply)
+}
+
+case object EmptyReconciler extends Reconciler[Any] {
+  override def reconcile(resource: Any): Task[ReconcileResult] = Task.pure(ReconcileResult.Ok)
 }
 
 object Reconciler {
@@ -37,6 +41,8 @@ object Reconciler {
     }
     new UpdateReconciler(fn, apply)
   }
+
+  def empty: Reconciler[Any] = EmptyReconciler
 
   def updater[T,U](updateFn: (U) => Task[ReconcileResult])(reconcileFn: T => Task[U]): UpdateReconciler[T,U] = {
     new UpdateReconciler[T,U](reconcileFn, updateFn)

@@ -4,6 +4,7 @@ import monix.eval.Task
 import play.api.libs.json.Format
 import skuber.api.client.{KubernetesClient, LoggingContext}
 import skuber.{ObjectResource, _}
+import cats.implicits._
 
 import scala.concurrent.Future
 import scala.util.{Failure, Success}
@@ -64,6 +65,13 @@ object Operations {
       case Update.None(original) => Future.successful(original)
     })
   }
+
+  def applyUpdates[Sp,St](updates: List[Update[CustomResource[Sp,St], St]])(
+    implicit fmt: Format[CustomResource[Sp,St]],
+    rd: ResourceDefinition[CustomResource[Sp,St]],
+    st: HasStatusSubresource[CustomResource[Sp,St]],
+    client: KubernetesClient
+  ): Task[Unit] = {
+    updates.traverse(applyUpdate).void
+  }
 }
-
-

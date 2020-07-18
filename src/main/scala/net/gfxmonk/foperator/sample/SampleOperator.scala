@@ -117,7 +117,7 @@ object AdvancedMain extends TaskApp {
   import Implicits._
   import Models._
 
-  val finalizer = s"AdvancedMain.${greetingSpec.apiGroup}"
+  val finalizerName = s"AdvancedMain.${greetingSpec.apiGroup}"
 
   def install()(implicit client: KubernetesClient) = {
     SimpleMain.install() >>
@@ -141,7 +141,7 @@ object AdvancedMain extends TaskApp {
     def run(update: GreetingUpdate): Task[ReconcileResult] = {
       // first, clear all finalizers
       val finalizersRemoved = update.removeFinalizers.traverse { (person: Person) =>
-        val meta = ResourceState.withoutFinalizer(finalizer)(person.metadata)
+        val meta = ResourceState.withoutFinalizer(finalizerName)(person.metadata)
         Operations.applyUpdate(person.metadataUpdate(meta))
       }.void
 
@@ -151,10 +151,10 @@ object AdvancedMain extends TaskApp {
     }
   }
 
-  private def runWith(
+  private def greetingController(
                        greetingsMirror: ResourceMirror[Greeting],
                        peopleMirror: ResourceMirror[Person]
-  ) = {
+  ): Controller[Greeting] = {
     val operator = Operator[Greeting](
       reconciler = Reconciler.updater(GreetingUpdate.run) { greeting => Task.pure {
         // when a person is soft-deleted, we schedule a reconcile against
@@ -166,7 +166,7 @@ object AdvancedMain extends TaskApp {
 
         // TODO this is racey, everyone is going to be trying to remove people.
         // Should we have two reconcilers, a fan-up and fan-down?
-        val allowDelete = peopleMirror.all().mapFilter(ResourceState.awaitingFinalizer(finalizer)).values.flatMap { person =>
+        val allowDelete = peopleMirror.all().mapFilter(ResourceState.awaitingFinalizer(finalizerName)).values.flatMap { person =>
           val stillGreeting = greetingsMirror.active().values.filter { greeting =>
             greeting.status.map(_.people).getOrElse(Nil).contains(person.metadata.name)
           }
@@ -212,13 +212,36 @@ object AdvancedMain extends TaskApp {
       greetingsMirror.active().values.filter(predicate).map(Id.of)
     }
 
-    new Controller[Greeting](operator, controllerInput).run.map(_ => ExitCode.Success)
+    new Controller[Greeting](operator, controllerInput)
+  }
+
+  private def personController(
+                                  greetingsMirror: ResourceMirror[Greeting],
+                                  peopleMirror: ResourceMirror[Person]
+                                ): Controller[Person] = {
+    def finalize(person: Person) = {
+      // Before deleting a person, we need to remove references from any greeting that
+      // currently refers to this person
+      val greetings = greetingsMirror.active().values.filter(g => references(person, g)).toList
+      Operations.applyUpdates(greetings.map { greeting =>
+        greeting.status.map { status =>
+          greeting.statusUpdate(status.copy(people = status.people.filterNot(_ === person.name)))
+        }.getOrElse(greeting.unchanged)
+      })
+    }
+
+    val operator = Operator[Person](finalizer = Finalizer(finalizerName)(finalize))
+
+    new Controller[Person](operator, ControllerInput(peopleMirror))
   }
 
   override def run(args: List[String]): Task[ExitCode] = {
     install() >> ResourceMirror.all[Greeting].use { greetings =>
       ResourceMirror.all[Person].use { people =>
-        runWith(greetings, people)
+        Task.parZip2(
+          greetingController(greetings, people).run,
+          personController(greetings, people).run
+        ).map(_ => ExitCode.Success)
       }
     }
   }
