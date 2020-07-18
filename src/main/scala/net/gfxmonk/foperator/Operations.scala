@@ -23,14 +23,6 @@ object Update {
       case None(initial) => None(initial)
     }
   }
-
-  object Implicits {
-    implicit class UpdateExt[T<:ObjectResource](val resource: T) extends AnyVal {
-      def statusUpdate[St](st: St): Update.Status[T,St] = Update.Status(resource, st)
-      def metadataUpdate(metadata: ObjectMeta): Update.Metadata[T] = Update.Metadata(resource, metadata)
-      def unchanged: Update.None[T] = Update.None(resource)
-    }
-  }
 }
 
 object Operations {
@@ -50,7 +42,7 @@ object Operations {
     }
   }
 
-  def applyUpdate[Sp,St](update: Update[CustomResource[Sp,St], St])(
+  def apply[Sp,St](update: Update[CustomResource[Sp,St], St])(
     implicit fmt: Format[CustomResource[Sp,St]],
     rd: ResourceDefinition[CustomResource[Sp,St]],
     st: HasStatusSubresource[CustomResource[Sp,St]],
@@ -66,12 +58,12 @@ object Operations {
     })
   }
 
-  def applyUpdates[Sp,St](updates: List[Update[CustomResource[Sp,St], St]])(
+  def applyMany[Sp,St](updates: List[Update[CustomResource[Sp,St], St]])(
     implicit fmt: Format[CustomResource[Sp,St]],
     rd: ResourceDefinition[CustomResource[Sp,St]],
     st: HasStatusSubresource[CustomResource[Sp,St]],
     client: KubernetesClient
   ): Task[Unit] = {
-    updates.traverse(update => applyUpdate(update)).void
+    updates.traverse(update => Operations.apply(update)).void
   }
 }

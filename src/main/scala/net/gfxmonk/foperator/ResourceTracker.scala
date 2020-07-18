@@ -14,12 +14,14 @@ import play.api.libs.json.Format
 import skuber.api.client.{EventType, KubernetesClient, LoggingContext, WatchEvent}
 import skuber.json.format.ListResourceFormat
 import skuber.{LabelSelector, ListOptions, ListResource, ObjectResource, ResourceDefinition}
+import scala.reflect.runtime.universe.{TypeTag, typeOf}
 
 trait ResourceUpdates[T] {
   def ids: Observable[Input[Id[T]]]
 }
 
 trait ResourceMirror[T] extends ResourceUpdates[T] {
+  // TODO: make all of these Task?
   def all(): Map[Id[T], ResourceState[T]]
 
   def active(): Map[Id[T], T] = all().mapFilter(ResourceState.active)
@@ -34,32 +36,32 @@ trait ResourceMirror[T] extends ResourceUpdates[T] {
   }
 }
 
-trait ResourceMirrorProvider[T<: ObjectResource] {
-  // This could almost be a resource, except our `use` ensures that asynchronous failure in the watch
-  // process cancels the user and results in an error
-  def use[R](consume: ResourceMirror[T] => Task[R]): Task[R]
-}
-
 object ResourceMirror {
+  trait Builder[T<: ObjectResource] {
+    // This could almost be a cats Resource, except our `use` ensures that asynchronous failure in the watch
+    // process cancels the user and results in an error
+    def use[R](consume: ResourceMirror[T] => Task[R]): Task[R]
+  }
+
   def all[T<: ObjectResource](
     implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext, materializer: ActorMaterializer,
     client: KubernetesClient
-  ): ResourceMirrorProvider[T] = providerImpl(ListOptions())
+  ): Builder[T] = providerImpl(ListOptions())
 
   def forSelector[T<: ObjectResource](labelSelector: LabelSelector)(
     implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext, materializer: ActorMaterializer,
     client: KubernetesClient
-  ): ResourceMirrorProvider[T] = providerImpl(ListOptions(labelSelector = Some(labelSelector)))
+  ): Builder[T] = providerImpl(ListOptions(labelSelector = Some(labelSelector)))
 
   def forOptions[T<: ObjectResource](listOptions: ListOptions)(
     implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext, materializer: ActorMaterializer,
     client: KubernetesClient
-  ): ResourceMirrorProvider[T] = providerImpl(listOptions)
+  ): Builder[T] = providerImpl(listOptions)
 
   private def providerImpl[T<: ObjectResource](listOptions: ListOptions)(
     implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext, materializer: ActorMaterializer,
     client: KubernetesClient
-  ): ResourceMirrorProvider[T] = new ResourceMirrorProvider[T] {
+  ): Builder[T] = new Builder[T] {
     override def use[R](consume: ResourceMirror[T] => Task[R]): Task[R] = {
       resource(listOptions).use { tracker =>
         // tracker.future never completes except for error, which will
@@ -105,7 +107,7 @@ object ResourceMirrorImpl {
  *    watcher (and other observers) to fall behind.
  *    In practice, this is typically consumed by Dispatcher, which doesn't backpressure.
  */
-private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: Observable[WatchEvent[T]])(implicit scheduler: Scheduler)
+private class ResourceMirrorImpl[T<: ObjectResource : TypeTag](initial: List[T], updates: Observable[WatchEvent[T]])(implicit scheduler: Scheduler)
   extends AutoCloseable with ResourceMirror[T] {
   import ResourceMirrorImpl._
   private val state = Atomic(initial.map(obj => Id.of(obj) -> ResourceState.of(obj)).toMap)
@@ -129,7 +131,6 @@ private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: 
       }
     }
     listeners.read.flatMap { listenerFns =>
-      // TODO: future dance is awkward, use Fiber?
       listenerFns.toList.traverse(_(input)).void
     }
   }).runToFuture
@@ -138,7 +139,17 @@ private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: 
     new Observable[Input[Id[T]]] {
       override def unsafeSubscribeFn(subscriber: Subscriber[Input[Id[T]]]): Cancelable = {
         def emit(id: Input[Id[T]]): Task[Unit] = {
-          Task.deferFuture(subscriber.onNext(id)).flatMap {
+          Task.defer {
+            val future = subscriber.onNext(id)
+            future.value match {
+              case Some(value) => Task.fromTry(value)
+              case None => {
+                println(s"WARN: a subscriber to ResourceMirror[${typeOf[T]}].ids is not synchronously accepting new items." +
+                  "\nThis will delay updates to every subscriber, you should make this synchronous (buffering if necessary).")
+                Task.fromFuture(future)
+              }
+            }
+          }.flatMap {
             case Ack.Continue => Task.unit
             case Ack.Stop => cancel
           }

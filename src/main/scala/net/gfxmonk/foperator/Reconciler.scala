@@ -37,7 +37,7 @@ object Reconciler {
                                    client: KubernetesClient
                                   ): UpdateReconciler[CustomResource[Sp,St], Update[CustomResource[Sp,St], St]] = {
     def apply(update: Update[CustomResource[Sp,St], St]): Task[ReconcileResult] = {
-      Operations.applyUpdate(update).map(_ => ReconcileResult.Ok)
+      Operations.apply(update).map(_ => ReconcileResult.Ok)
     }
     new UpdateReconciler(fn, apply)
   }

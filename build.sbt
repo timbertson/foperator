@@ -1,7 +1,6 @@
 scalaVersion in ThisBuild := "2.13.2"
 
-lazy val root = (project in file(".")).settings(
-  name := "foperator",
+val common = Seq(
   version := "1.0",
 
   organization := "net.gfxmonk",
@@ -15,3 +14,18 @@ lazy val root = (project in file(".")).settings(
     "org.scalatest" %% "scalatest" % "3.1.0" % Test
   )
 )
+
+lazy val lib = (project in file("."))
+  .settings(common)
+  .settings(
+    name := "foperator"
+  )
+
+lazy val sample = (project in file("sample"))
+  .settings(common)
+  .settings(
+    name := "foperator-sample",
+    libraryDependencies ++= Seq(
+      "ch.qos.logback" % "logback-classic" % "1.2.3"
+    )
+  ).dependsOn(lib)

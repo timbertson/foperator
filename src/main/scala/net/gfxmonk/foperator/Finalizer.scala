@@ -20,7 +20,7 @@ class CustomResourceFinalizer[Sp,St](name: String, destroy: CustomResource[Sp,St
                                       client: KubernetesClient
                                     ) extends Finalizer[CustomResource[Sp,St]] {
 
-  import Update.Implicits._
+  import net.gfxmonk.foperator.implicits._
 
   private def reconcileFn(resource: ResourceState[CustomResource[Sp,St]]): Task[Update[CustomResource[Sp,St], St]] = {
     def finalizers(resource:CustomResource[Sp,St]) = resource.metadata.finalizers.getOrElse(Nil)
@@ -53,7 +53,7 @@ class CustomResourceFinalizer[Sp,St](name: String, destroy: CustomResource[Sp,St
 
   override def reconcileState(resource: ResourceState[CustomResource[Sp,St]]): Task[ResourceState[CustomResource[Sp,St]]] = {
     // TODO shouldn't need all these explicits
-    reconcileFn(resource).flatMap(Operations.applyUpdate(_)(fmt, rd, st, client)).map(ResourceState.of)
+    reconcileFn(resource).flatMap(Operations.apply(_)(fmt, rd, st, client)).map(ResourceState.of)
   }
 }
 
