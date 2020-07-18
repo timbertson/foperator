@@ -5,56 +5,80 @@ import java.io.{BufferedReader, InputStreamReader}
 import cats.effect.ExitCode
 import monix.eval.{Task, TaskApp}
 import monix.reactive.Observable
-import net.gfxmonk.foperator.sample.Models.{Greeting, GreetingSpec, Person, PersonSpec}
 import net.gfxmonk.foperator._
+import net.gfxmonk.foperator.internal.Logging
+import net.gfxmonk.foperator.sample.Implicits._
+import net.gfxmonk.foperator.sample.Models.{Greeting, GreetingSpec, Person, PersonSpec}
 import play.api.libs.json.Format
 import skuber.api.client.KubernetesClient
 import skuber.{CustomResource, HasStatusSubresource, ObjectResource, ResourceDefinition}
 
 import scala.util.{Failure, Random, Success}
 
+object SimpleWithMutator extends TaskApp with Logging {
+  override def run(args: List[String]): Task[ExitCode] = {
+//    import scala.jdk.CollectionConverters._
+//    Runtime.getRuntime.addShutdownHook(new Thread { () =>
+//      println("Stahp")
+//      Thread.sleep(1000)
+//      val live = Thread.getAllStackTraces.keySet.asScala.filterNot(_.isDaemon)
+//      println("live threads: " + live)
+//    })
+    SimpleMain.install() >> Task.parZip2(
+//      SimpleMain.run(Nil),
+      Task.unit,
+      MutatorMain.runMutator
+    ).map(_ => ExitCode.Success).doOnCancel { Task {
+      logger.warn("Exiting")
+    }}
+  }
+}
+
+object AdvancedWithMutator extends TaskApp {
+  override def run(args: List[String]): Task[ExitCode] = {
+    AdvancedMain.install() >> Task.parZip2(
+      AdvancedMain.run(Nil),
+      MutatorMain.runMutator
+    ).map(_ => ExitCode.Success)
+  }
+}
 
 // Mutator is an app for randomly mutating Greeting / People objects and observing the results.
-// It logs all changes to these resources, and mutates something whenever you press Return
-object MutatorMain {
+// It logs all changes to these resources, and attempts a mutation whenever you press Return
+// (Not all mutations succeed, it'll pick a new mutation on failure)
+object MutatorMain extends Logging {
   import Implicits._
-  object WithSimpleOperator extends TaskApp {
-    override def run(args: List[String]): Task[ExitCode] = {
-      SimpleMain.install() >> Task.parZip2(
-        SimpleMain.run(Nil),
-        runMutator
-      ).map(_ => ExitCode.Success)
-    }
-  }
-
-  object WithAdvancedOperator extends TaskApp {
-    override def run(args: List[String]): Task[ExitCode] = {
-      AdvancedMain.install() >> Task.parZip2(
-        AdvancedMain.run(Nil),
-        runMutator
-      ).map(_ => ExitCode.Success)
-    }
-  }
 
   def runMutator: Task[ExitCode] = {
-    println("Loading ... ")
+    logger.info("Loading ... ")
     ResourceMirror.all[Greeting].use { greetings =>
       ResourceMirror.all[Person].use { people =>
         Task.parZip3(
-          watchPeople(people),
-          watchGreetings(greetings),
+          watchResource(people),
+          watchResource(greetings),
           mutate(people, greetings)
         ).map(_ => ExitCode.Success)
       }
     }
   }
 
-  private def watchPeople(people: ResourceMirror[Person]): Task[Unit] = {
-    Task.unit
-  }
-
-  private def watchGreetings(greetings: ResourceMirror[Greeting]): Task[Unit] = {
-    Task.unit
+  private def watchResource[T<:ObjectResource](mirror: ResourceMirror[T])(implicit pp: PrettyPrint[T], rd: ResourceDefinition[T]): Task[Unit] = {
+    mirror.ids.map {
+      case Input.HardDeleted(id) => id
+      case Input.Updated(id) => id
+    }.mapEval { id =>
+      mirror.all.flatMap { all =>
+        val desc = all.get(id) match {
+          case None => "[deleted]"
+          case Some(ResourceState.Active(resource)) => pp.pretty(resource)
+          case Some(ResourceState.SoftDeleted(resource)) => s"[finalizing] ${pp.pretty(resource)}"
+        }
+        Task {
+          logger.debug(s"Saw update to ${id}: ${desc}")
+          logger.debug(s"  (total: ${all.size} ${rd.spec.names.plural})")
+        }
+      }
+    }.completedL
   }
 
   sealed trait Decision // for traversing a decision tree
@@ -91,38 +115,65 @@ object MutatorMain {
 
   sealed trait Action {
     def run: Task[Unit]
+    def pretty: String
   }
+
   case object Noop extends Action {
     override def run: Task[Unit] = Task.raiseError(new RuntimeException("No action found (reached a branch with no children)"))
+
+    override def pretty: String = "Noop"
   }
 
-  case class Delete[T <: ObjectResource](id: Id[T])(implicit rd: ResourceDefinition[T]) extends Action {
-    override def run: Task[Unit] = Task.deferFuture(client.delete(id.name))
+  case class Delete[Sp,St](resource: CustomResource[Sp,St])(implicit rd: ResourceDefinition[CustomResource[Sp,St]], pp: PrettyPrint[CustomResource[Sp,St]]) extends Action {
+    override def run: Task[Unit] = Task.deferFuture(client.delete(resource.name))
+
+    override def pretty: String = s"Delete[${rd.spec.names.kind}](${pp.pretty(resource)})"
   }
 
-  case class Create[T <: ObjectResource](resource: T)(implicit rd: ResourceDefinition[T], fmt: Format[T]) extends Action {
-    override def run: Task[Unit] = Task.deferFuture(client.create(resource)).void
+  case class Create[Sp,St](resource: CustomResource[Sp,St])(
+    implicit rd: ResourceDefinition[CustomResource[Sp,St]],
+    fmt: Format[CustomResource[Sp,St]],
+    pp: PrettyPrint[Sp]
+  ) extends Action {
+    def pretty: String = s"Create[${rd.spec.names.kind}](${pp.pretty(resource.spec)})"
+
+    private def randomId: Task[String] = {
+      Task(Random.nextBytes(4)).map { bytes =>
+        bytes.map(b => String.format("%02X", b & 0xff)).mkString.toLowerCase
+      }
+    }
+
+    private def namedResource = randomId.map(resource.withName)
+
+    override def run: Task[Unit] = {
+      namedResource.flatMap { resource =>
+        Task.deferFuture(client.create(resource)).void
+      }
+    }
   }
 
-  case class Modify[Sp,St](update: CRUpdate[Sp,St])(
+  case class Modify[Sp,St](update: CustomResourceUpdate[Sp,St])(
     implicit fmt: Format[CustomResource[Sp,St]],
     rd: ResourceDefinition[CustomResource[Sp,St]],
     st: HasStatusSubresource[CustomResource[Sp,St]],
-    client: KubernetesClient
+    client: KubernetesClient,
+    pp: PrettyPrint[CustomResourceUpdate[Sp,St]]
   ) extends Action {
     override def run: Task[Unit] = Operations.apply(update).void
+    def pretty: String = s"Modify[${rd.spec.names.kind}](${pp.pretty(update)})"
   }
 
   def rootDecision(people: List[Person], greetings: List[Greeting]): Decision = {
-    val deletePerson = Decision(people)(person => Decision(Delete(Id.of(person))))
-    val deleteGreeting = Decision(greetings)(greeting => Decision(Delete(Id.of(greeting))))
+    val deletePerson = Decision(people)(person => Decision(Delete(person)))
+    val deleteGreeting = Decision(greetings)(greeting => Decision(Delete(greeting)))
 
-    val firstNames = List("a", "b", "c")
-    val surnames = List("a", "b", "c")
+    val firstNames = List("Lachy", "Emma", "Simon", "Anthony", "Wags", "Captain", "Dorothy")
+    val surnames = List("Wiggle", "Henri", "Coombe", "Smith")
+
     val createPerson = Decision(firstNames) { firstName =>
       Decision(surnames) { surname =>
         val spec = PersonSpec(firstName = firstName, surname = surname)
-        Decision(Create(CustomResource(spec)))
+        Decision(Create(CustomResource(spec).withName("ds")))
       }
     }
 
@@ -156,7 +207,6 @@ object MutatorMain {
       Decision.eager(changeName, changeSurname)
     }
 
-    // TODO createGreeting
     Decision.eager(
       createPerson,
       createFamilyGreeting,
@@ -170,26 +220,53 @@ object MutatorMain {
 
   private def mutate(people: ResourceMirror[Person], greetings: ResourceMirror[Greeting]): Task[Unit] = {
     val nextAction: Task[Action] = {
+      def pick(root: Decision): Task[Action] = Decision.randomAction(root).flatMap {
+        case `Noop` => pick(root) // try again, assuming there's always at least one valid action
+        case other => Task.pure(other)
+      }
+
       for {
         allPeople <- people.active.map(_.values.toList)
         allGreetings <- greetings.active.map(_.values.toList)
         root = rootDecision(allPeople, allGreetings)
-        action <- Decision.randomAction(root)
+        action <- pick(root)
       } yield action
     }
 
     def doSomething: Task[Unit] = {
       nextAction.flatMap { action =>
-        println(s"*** Running: $action")
+        logger.info(s"Running: ${prettyPrintAction.pretty(action)}")
         action.run.materialize
       }.flatMap {
-        case Success(_) => Task(println("Done"))
-        case Failure(err) => Task(println(s"^^^ Failed: $err")).flatMap(_ => doSomething)
+        case Success(_) => Task.unit
+        case Failure(err) => Task(logger.warn(s"^^^ Failed: $err"))
       }
     }
 
-    Observable.fromLinesReader(Task(new BufferedReader(new InputStreamReader(sys.process.stdin))))
-      .mapEval(_ => doSomething)
-      .completedL
+    Observable.fromTask(Task {
+      // DEBUGGING...
+      // class BR(in: InputStreamReader) extends BufferedReader(in) {
+      //   override def readLine(): String = {
+      //     println(">READ")
+      //     try {
+      //       val result = super.readLine()
+      //       println("<READ")
+      //       result
+      //     } finally {
+      //       println("[x READ]")
+      //     }
+      //   }
+      // }
+
+      // We should be able to use Observable.fromLinesReader, but that
+      // uses InputStreamReader.read, which can't be interrupted (even on process exit).
+      // Workaround is to close the stream on exit, with:
+      //   Runtime.getRuntime.addShutdownHook(new Thread(() => sys.process.stdin.close()))
+      // (but scala's IO.source seems to work fine without that)
+      logger.info("--- ready (press return to mutate) ---")
+      Observable.fromIterator(Task(scala.io.Source.stdin.getLines()))
+    }).concat.mapEval { input: String =>
+      doSomething
+    }.completedL
   }
 }

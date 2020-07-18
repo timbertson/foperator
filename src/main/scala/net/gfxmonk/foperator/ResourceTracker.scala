@@ -10,6 +10,7 @@ import monix.execution.atomic.Atomic
 import monix.execution.{Ack, Cancelable, Scheduler}
 import monix.reactive.observers.Subscriber
 import monix.reactive.{Consumer, Observable}
+import net.gfxmonk.foperator.internal.Logging
 import play.api.libs.json.Format
 import skuber.api.client.{EventType, KubernetesClient, LoggingContext, WatchEvent}
 import skuber.json.format.ListResourceFormat
@@ -111,7 +112,7 @@ object ResourceMirrorImpl {
  *    In practice, this is typically consumed by Dispatcher, which doesn't backpressure.
  */
 private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: Observable[WatchEvent[T]])(implicit scheduler: Scheduler)
-  extends AutoCloseable with ResourceMirror[T] {
+  extends AutoCloseable with ResourceMirror[T] with Logging {
   import ResourceMirrorImpl._
   private val state = Atomic(initial.map(obj => Id.of(obj) -> ResourceState.of(obj)).toMap)
   private val listeners: MVar[Task, Set[IdSubscriber[T]]] = MVar[Task].of(Set.empty[IdSubscriber[T]]).runSyncUnsafe()
@@ -147,8 +148,8 @@ private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: 
             future.value match {
               case Some(value) => Task.fromTry(value)
               case None => {
-                println(s"WARN: a subscriber to ResourceMirror.ids is not synchronously accepting new items." +
-                  "\nThis will delay updates to every subscriber, you should make this synchronous (buffering if necessary).")
+                logger.warn(s"A subscriber to ResourceMirror.ids is not synchronously accepting new items." +
+                  " This will delay updates to every subscriber, you should make this synchronous (buffering if necessary).")
                 Task.fromFuture(future)
               }
             }

@@ -5,6 +5,7 @@ import play.api.libs.json.Format
 import skuber.api.client.{KubernetesClient, LoggingContext}
 import skuber.{ObjectResource, _}
 import cats.implicits._
+import net.gfxmonk.foperator.internal.Logging
 
 import scala.concurrent.Future
 import scala.util.{Failure, Success}
@@ -17,17 +18,19 @@ object Update {
   case class None[T](value: T) extends Update[T, Nothing, Nothing]
 
   // TODO can we use something more general than CustomResource
-  def minimal[Sp,St](update: CRUpdate[Sp, St]): CRUpdate[Sp, St] = {
+  def minimal[Sp,St](update: CustomResourceUpdate[Sp, St]): CustomResourceUpdate[Sp, St] = {
     update match {
       case Status(initial, status) => if(initial.status == status) None(initial) else update
+      case Spec(initial, spec) => if(initial.spec == spec) None(initial) else update
       case Metadata(initial, metadata) => if(initial.metadata == metadata) None(initial) else update
       case None(initial) => None(initial)
     }
   }
 }
 
-object Operations {
+object Operations extends Logging {
   def write[O<:ObjectResource](withMetadata: (O, ObjectMeta) => O)(resource: O)(implicit client: KubernetesClient, fmt: Format[O], rd: ResourceDefinition[O], lc: LoggingContext): Task[O] = {
+    Task(logger.debug(s"Writing ${resource.name}")) >>
     Task.deferFuture(client.create(resource)).materialize.flatMap {
       case Success(resource) => Task.pure(resource)
       case Failure(err: K8SException) if err.status.code.contains(409) => {
@@ -40,6 +43,9 @@ object Operations {
         }
       }
       case Failure(err) => Task.raiseError(err)
+    }.map { result =>
+      logger.debug(s"Wrote ${resource.name} v${resource.metadata.resourceVersion}")
+      result
     }
   }
 

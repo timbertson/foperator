@@ -30,13 +30,13 @@ object Reconciler {
     (resource: T) => fn(resource)
   }
 
-  def customResourceUpdater[Sp,St](fn: CustomResource[Sp,St] => Task[CRUpdate[Sp,St]])
+  def customResourceUpdater[Sp,St](fn: CustomResource[Sp,St] => Task[CustomResourceUpdate[Sp,St]])
                                   (implicit fmt: Format[CustomResource[Sp,St]],
                                    rd: ResourceDefinition[CustomResource[Sp,St]],
                                    st: HasStatusSubresource[CustomResource[Sp,St]],
                                    client: KubernetesClient
-                                  ): UpdateReconciler[CustomResource[Sp,St], CRUpdate[Sp,St]] = {
-    def apply(update: CRUpdate[Sp,St]): Task[ReconcileResult] = {
+                                  ): UpdateReconciler[CustomResource[Sp,St], CustomResourceUpdate[Sp,St]] = {
+    def apply(update: CustomResourceUpdate[Sp,St]): Task[ReconcileResult] = {
       Operations.apply(update).map(_ => ReconcileResult.Ok)
     }
     new UpdateReconciler(fn, apply)

@@ -22,7 +22,7 @@ class CustomResourceFinalizer[Sp,St](name: String, destroy: CustomResource[Sp,St
 
   import net.gfxmonk.foperator.implicits._
 
-  private def reconcileFn(resource: ResourceState[CustomResource[Sp,St]]): Task[CRUpdate[Sp,St]] = {
+  private def reconcileFn(resource: ResourceState[CustomResource[Sp,St]]): Task[CustomResourceUpdate[Sp,St]] = {
     def finalizers(resource:CustomResource[Sp,St]) = resource.metadata.finalizers.getOrElse(Nil)
     def hasMine(resource:CustomResource[Sp,St]) = finalizers(resource).contains(name)
 

@@ -43,7 +43,7 @@ class ResourceLoop[T](
                        refreshInterval: FiniteDuration,
                        permitScope: PermitScope,
                        backoffTime: ErrorCount => FiniteDuration
-                     )(implicit scheduler: Scheduler) extends Cancelable {
+                     )(implicit scheduler: Scheduler) extends Cancelable with Logging {
   // loop is:
   // busy (schedule another when ready)
   // quiet (nothing to do)
@@ -68,7 +68,9 @@ class ResourceLoop[T](
       // TODO return Option[Task], then we can log it differently
       currentState.flatMap {
         case None => Task.pure(Success(ReconcileResult.Ok))
-        case Some(obj) => reconciler.reconcile(obj).materialize
+        case Some(obj) => {
+          reconciler.reconcile(obj).materialize
+        }
       }
     }
 
@@ -78,14 +80,14 @@ class ResourceLoop[T](
           case ReconcileResult.RetryAfter(delay) => delay
           case _ => refreshInterval
         }
-        println(s"Reconcile completed successfully, retrying in ${delay.toSeconds}s")
+        logger.info(s"Reconcile completed successfully, retrying in ${delay.toSeconds}s")
         scheduleReconcile(ErrorCount.zero, delay)
       }
 
       case Failure(error) => {
         val nextCount = errorCount.increment
         val delay = backoffTime(nextCount).min(refreshInterval)
-        println(s"Reconcile failed: ${error}, retrying in ${delay.toSeconds}s")
+        logger.warn(s"Reconcile failed: ${error}, retrying in ${delay.toSeconds}s")
         scheduleReconcile(nextCount, delay)
       }
     }

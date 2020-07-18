@@ -32,7 +32,7 @@ class Dispatcher[Loop[_], T<:ObjectResource](
   manager: ResourceLoop.Manager[Loop],
   permitScope: Dispatcher.PermitScope
 ) {
-  def run(input: Observable[Input[Id[T]]])(implicit scheduler: Scheduler): Task[Unit] = {
+  def run(input: Observable[Input[Id[T]]]): Task[Unit] = {
     input.mapAccumulate(Map.empty[Id[T],Loop[T]]) { (map:Map[Id[T],Loop[T]], input) =>
       val result: (Map[Id[T],Loop[T]], Task[Unit]) = input match {
         case Input.HardDeleted(id) => {

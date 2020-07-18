@@ -1,11 +1,13 @@
-<configuration debug="true">
+<configuration>
     <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
-        <withJansi>true</withJansi>
         <encoder>
-            <pattern>[%thread] %highlight(%-5level) %cyan(%logger{15}) - %msg %n</pattern>
+            <pattern>%highlight(%level) %cyan(%logger): %msg%n</pattern>
         </encoder>
     </appender>
+
     <root level="DEBUG">
         <appender-ref ref="STDOUT" />
     </root>
+
+    <logger name="skuber.api" level="WARN"/>
 </configuration>
