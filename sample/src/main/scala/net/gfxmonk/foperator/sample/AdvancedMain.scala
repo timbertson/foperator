@@ -8,6 +8,8 @@ import net.gfxmonk.foperator.implicits._
 import skuber.api.client.KubernetesClient
 import skuber.apiextensions.CustomResourceDefinition
 
+import scala.util.Try
+
 object AdvancedMain extends TaskApp {
   implicit val _scheduler = scheduler
 
@@ -27,12 +29,20 @@ object AdvancedMain extends TaskApp {
   // does this greeting's status currently reference this person?
   private def references(person: Person, greeting: Greeting) = !greeting.status.map(_.people).getOrElse(Nil).contains_(person.metadata.name)
 
+  private def findPerson(all: Map[Id[Person], Person], id: Id[Person]): Try[Person] = {
+    all.get(id).toRight(new RuntimeException(s"Person not active: $id")).toTry
+  }
+
   // Given a greeting update, apply it to the cluster.
   // This differs from the default Operations.applyUpdate because
   // it also installs finalizers on referenced people.
   private def greetingUpdater(peopleMirror: ResourceMirror[Person])(update: Update.Status[Greeting, GreetingStatus]): Task[ReconcileResult] = {
     val ids = GreetingStatus.peopleIds(update)
-    val findPeople: Task[List[Person]] = ids.traverse(id => peopleMirror.getActive(id).map(Task.pure).getOrElse(Task.raiseError(new RuntimeException("noooo"))))
+    val findPeople: Task[List[Person]] = {
+      peopleMirror.active.flatMap { all =>
+        ids.traverse(id => Task.fromTry(findPerson(all, id)))
+      }
+    }
 
     val updateGreeting = Operations.apply(update).map(_ => ReconcileResult.Ok)
 
@@ -58,11 +68,14 @@ object AdvancedMain extends TaskApp {
   ): Controller[Greeting] = {
     val operator = Operator[Greeting](
       reconciler = Reconciler.updater(greetingUpdater(peopleMirror)) { greeting =>
-        Task.pure {
-          val newStatus = greeting.spec.surname match {
-            case None => greeting.status.getOrElse(SimpleMain.expectedStatus(greeting))
-            case Some(surname) => {
-              val people = peopleMirror.active().values.filter { person =>
+        val newStatus = greeting.spec.surname match {
+
+          // if there's no surname, just do what SimpleMain does
+          case None => Task.pure(SimpleMain.expectedStatus(greeting))
+
+          case Some(surname) => {
+            peopleMirror.active.map { activePeople =>
+              val people = activePeople.values.filter { person =>
                 person.spec.surname == surname
               }.toList.sortBy(_.spec.firstName)
 
@@ -72,8 +85,8 @@ object AdvancedMain extends TaskApp {
               )
             }
           }
-          greeting.statusUpdate(newStatus)
         }
+        newStatus.map(greeting.statusUpdate)
       }
     )
 
@@ -84,7 +97,7 @@ object AdvancedMain extends TaskApp {
         val shouldRemove = !matches(person, greeting) && references(person, greeting)
         shouldAdd || shouldRemove
       }
-      greetingsMirror.active().values.filter(needsUpdate).map(Id.of)
+      greetingsMirror.activeValues.filter(needsUpdate).map(Id.of)
     }
 
     new Controller[Greeting](operator, controllerInput)
@@ -97,13 +110,14 @@ object AdvancedMain extends TaskApp {
     def finalize(person: Person) = {
       // Before deleting a person, we need to remove references from any greeting that
       // currently refers to this person
-      val greetings = greetingsMirror.active().values.filter(g => references(person, g)).toList
-      Operations.applyMany(greetings.map { greeting =>
-        greeting.status.map { status =>
-          greeting.statusUpdate(status.copy(people = status.people.filterNot(_ === person.name)))
-        }.getOrElse(greeting.unchanged)
+      greetingsMirror.active.flatMap { active =>
+        val greetings = active.values.filter(g => references(person, g)).toList
+        Operations.applyMany(greetings.map { greeting =>
+          greeting.status.map { status =>
+            greeting.statusUpdate(status.copy(people = status.people.filterNot(_ === person.name)))
+          }.getOrElse(greeting.unchanged)
+        })
       }
-      )
     }
 
     val operator = Operator[Person](finalizer = Finalizer(finalizerName)(finalize))

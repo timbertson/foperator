@@ -9,14 +9,15 @@ import cats.implicits._
 import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
-sealed trait Update[+T, +St]
+sealed trait Update[+T, +Sp, +St]
 object Update {
-  case class Status[T, St](initial: T, status: St) extends Update[T, St]
-  case class Metadata[T](initial: T, metadata: ObjectMeta) extends Update[T, Nothing]
-  case class None[T](value: T) extends Update[T,Nothing]
+  case class Spec[T, Sp](initial: T, spec: Sp) extends Update[T, Sp, Nothing]
+  case class Status[T, St](initial: T, status: St) extends Update[T, Nothing, St]
+  case class Metadata[T](initial: T, metadata: ObjectMeta) extends Update[T, Nothing, Nothing]
+  case class None[T](value: T) extends Update[T, Nothing, Nothing]
 
   // TODO can we use something more general than CustomResource
-  def minimal[Sp,St](update: Update[CustomResource[Sp,St], St]): Update[CustomResource[Sp,St], St] = {
+  def minimal[Sp,St](update: CRUpdate[Sp, St]): CRUpdate[Sp, St] = {
     update match {
       case Status(initial, status) => if(initial.status == status) None(initial) else update
       case Metadata(initial, metadata) => if(initial.metadata == metadata) None(initial) else update
@@ -42,7 +43,7 @@ object Operations {
     }
   }
 
-  def apply[Sp,St](update: Update[CustomResource[Sp,St], St])(
+  def apply[Sp,St](update: Update[CustomResource[Sp,St], Sp, St])(
     implicit fmt: Format[CustomResource[Sp,St]],
     rd: ResourceDefinition[CustomResource[Sp,St]],
     st: HasStatusSubresource[CustomResource[Sp,St]],
@@ -53,12 +54,13 @@ object Operations {
     Task.fromFuture(Update.minimal(update) match {
       // TODO no updateMetadata? Is metadata not a subresource?
       case Update.Metadata(original, meta) => client.update(original.withMetadata(meta))
+      case Update.Spec(original, sp) => client.update(original.copy(spec = sp))
       case Update.Status(original, st) => client.updateStatus(original.withStatus(st))
       case Update.None(original) => Future.successful(original)
     })
   }
 
-  def applyMany[Sp,St](updates: List[Update[CustomResource[Sp,St], St]])(
+  def applyMany[Sp,St](updates: List[Update[CustomResource[Sp,St], Sp, St]])(
     implicit fmt: Format[CustomResource[Sp,St]],
     rd: ResourceDefinition[CustomResource[Sp,St]],
     st: HasStatusSubresource[CustomResource[Sp,St]],

@@ -14,7 +14,6 @@ import play.api.libs.json.Format
 import skuber.api.client.{EventType, KubernetesClient, LoggingContext, WatchEvent}
 import skuber.json.format.ListResourceFormat
 import skuber.{LabelSelector, ListOptions, ListResource, ObjectResource, ResourceDefinition}
-import scala.reflect.runtime.universe.{TypeTag, typeOf}
 
 trait ResourceUpdates[T] {
   def ids: Observable[Input[Id[T]]]
@@ -22,21 +21,25 @@ trait ResourceUpdates[T] {
 
 trait ResourceMirror[T] extends ResourceUpdates[T] {
   // TODO: make all of these Task?
-  def all(): Map[Id[T], ResourceState[T]]
+  def all: Task[Map[Id[T], ResourceState[T]]]
+  def active: Task[Map[Id[T], T]] = all.map(_.mapFilter(ResourceState.active))
 
-  def active(): Map[Id[T], T] = all().mapFilter(ResourceState.active)
+  def allValues: Observable[ResourceState[T]] = Observable.fromTask(all).concatMap(map => Observable.from(map.values))
+  def activeValues: Observable[T] = allValues.mapFilter(ResourceState.active)
 
-  def get(id: Id[T]): Option[ResourceState[T]] = {
-    all.get(id)
+  def get(id: Id[T]): Task[Option[ResourceState[T]]] = {
+    all.map(_.get(id))
   }
 
-  def getActive(id: Id[T]): Option[T] = get(id) match {
+  def getActive(id: Id[T]): Task[Option[T]] = get(id).map {
     case Some(ResourceState.Active(value)) => Some(value)
     case Some(ResourceState.SoftDeleted(_)) | None => None
   }
 }
 
 object ResourceMirror {
+  type IdMap[T] = Map[Id[T], T]
+
   trait Builder[T<: ObjectResource] {
     // This could almost be a cats Resource, except our `use` ensures that asynchronous failure in the watch
     // process cancels the user and results in an error
@@ -107,7 +110,7 @@ object ResourceMirrorImpl {
  *    watcher (and other observers) to fall behind.
  *    In practice, this is typically consumed by Dispatcher, which doesn't backpressure.
  */
-private class ResourceMirrorImpl[T<: ObjectResource : TypeTag](initial: List[T], updates: Observable[WatchEvent[T]])(implicit scheduler: Scheduler)
+private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: Observable[WatchEvent[T]])(implicit scheduler: Scheduler)
   extends AutoCloseable with ResourceMirror[T] {
   import ResourceMirrorImpl._
   private val state = Atomic(initial.map(obj => Id.of(obj) -> ResourceState.of(obj)).toMap)
@@ -144,7 +147,7 @@ private class ResourceMirrorImpl[T<: ObjectResource : TypeTag](initial: List[T],
             future.value match {
               case Some(value) => Task.fromTry(value)
               case None => {
-                println(s"WARN: a subscriber to ResourceMirror[${typeOf[T]}].ids is not synchronously accepting new items." +
+                println(s"WARN: a subscriber to ResourceMirror.ids is not synchronously accepting new items." +
                   "\nThis will delay updates to every subscriber, you should make this synchronous (buffering if necessary).")
                 Task.fromFuture(future)
               }
@@ -175,12 +178,12 @@ private class ResourceMirrorImpl[T<: ObjectResource : TypeTag](initial: List[T],
       Observable.from(obj.map(fn).getOrElse(Nil))
     }
     ids.map {
-      case Input.Updated(id) => handle(get(id))
+      case Input.Updated(id) => Observable.fromTask(get(id)).concatMap(handle)
       case Input.HardDeleted(_) => Observable.empty
     }.concat
   }
 
-  override def all(): Map[Id[T], ResourceState[T]] = state.get
+  override def all: Task[Map[Id[T], ResourceState[T]]] = Task(state.get)
 
   override def close(): Unit = future.cancel()
 }

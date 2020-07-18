@@ -1,27 +1,30 @@
 package net.gfxmonk.foperator
 
+import monix.eval.Task
 import monix.reactive.Observable
 
 class ControllerInput[T] private (mirror: ResourceMirror[T], ids: Observable[Input[Id[T]]]) {
-  def withActiveResourceTrigger[R](mirror: ResourceMirror[R])(extractIds: R => Iterable[Id[T]]): ControllerInput[T] = {
+  def withActiveResourceTrigger[R](mirror: ResourceMirror[R])(extractIds: R => Observable[Id[T]]): ControllerInput[T] = {
     withResourceTrigger(mirror) {
       case ResourceState.Active(value) => extractIds(value)
-      case ResourceState.SoftDeleted(_) => Nil
+      case ResourceState.SoftDeleted(_) => Observable.empty
     }
   }
 
-  def withResourceTrigger[R](mirror: ResourceMirror[R])(extractIds: ResourceState[R] => Iterable[Id[T]]): ControllerInput[T] = {
+  def withResourceTrigger[R](mirror: ResourceMirror[R])(extractIds: ResourceState[R] => Observable[Id[T]]): ControllerInput[T] = {
     withIdTrigger[R](mirror) {
-      case Input.HardDeleted(_) => Nil
+      case Input.HardDeleted(_) => Observable.empty
       case Input.Updated(id) => {
-        mirror.get(id).map(extractIds).getOrElse(Nil)
+        Observable.fromTask(mirror.get(id)).concatMap {
+          case Some(resource) => extractIds(resource)
+          case None => Observable.empty
+        }
       }
     }
   }
 
-  def withIdTrigger[R](watcher: ResourceUpdates[R])(extractIds: Input[Id[R]] => Iterable[Id[T]]): ControllerInput[T] = {
-    val ids = watcher.ids.concatMap(update => Observable.from(extractIds(update)))
-    withExternalTrigger(ids)
+  def withIdTrigger[R](watcher: ResourceUpdates[R])(extractIds: Input[Id[R]] => Observable[Id[T]]): ControllerInput[T] = {
+    withExternalTrigger(watcher.ids.concatMap(extractIds))
   }
 
   def withExternalTrigger[R](triggers: Observable[Id[T]]): ControllerInput[T] = {
@@ -31,7 +34,7 @@ class ControllerInput[T] private (mirror: ResourceMirror[T], ids: Observable[Inp
   // used by Controller, not typically client code
   def inputs: Observable[Input[Id[T]]] = Observable(mirror.ids, ids).merge
 
-  def get(id: Id[T]): Option[ResourceState[T]] = mirror.get(id)
+  def get(id: Id[T]): Task[Option[ResourceState[T]]] = mirror.get(id)
 }
 
 object ControllerInput {

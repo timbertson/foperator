@@ -1,5 +1,7 @@
 package net.gfxmonk
 
-package object foperator {
+import skuber.CustomResource
 
+package object foperator {
+  type CRUpdate[Sp,St] = Update[CustomResource[Sp,St],Sp,St]
 }

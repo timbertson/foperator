@@ -28,7 +28,7 @@ object Dispatcher {
 // Fans out a single stream of Input[Id] to a Loop instance per Id
 class Dispatcher[Loop[_], T<:ObjectResource](
   reconciler: Reconciler[ResourceState[T]],
-  getResource: Id[T] => Option[ResourceState[T]],
+  getResource: Id[T] => Task[Option[ResourceState[T]]],
   manager: ResourceLoop.Manager[Loop],
   permitScope: Dispatcher.PermitScope
 ) {
@@ -42,7 +42,7 @@ class Dispatcher[Loop[_], T<:ObjectResource](
           map.get(id) match {
             case Some(loop) => (map, manager.update(loop))
             case None => {
-              val loop = manager.create[T](Task { getResource(id) }, reconciler, permitScope)
+              val loop = manager.create[T](getResource(id), reconciler, permitScope)
               (map.updated(id, loop), Task.unit)
             }
           }
