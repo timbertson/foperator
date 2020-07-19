@@ -43,7 +43,7 @@ object AdvancedMain extends TaskApp with Logging {
   private def matches(person: Person, greeting: Greeting) = greeting.spec.surname === Some(person.spec.surname)
 
   // does this greeting's status currently reference this person?
-  private def references(person: Person, greeting: Greeting) = !greeting.status.map(_.people).getOrElse(Nil).contains_(person.metadata.name)
+  private def references(person: Person, greeting: Greeting) = greeting.status.map(_.people).getOrElse(Nil).contains_(person.metadata.name)
 
   private def findPerson(all: Map[Id[Person], Person], id: Id[Person]): Try[Person] = {
     all.get(id).toRight(new RuntimeException(s"Person not active: $id")).toTry
@@ -66,7 +66,7 @@ object AdvancedMain extends TaskApp with Logging {
     val updateGreeting = Operations.apply(update).map(_ => ReconcileResult.Ok)
 
     def addFinalizers(people: List[Person]) = people.traverse { person =>
-      val meta = ResourceState.withoutFinalizer(finalizerName)(person.metadata)
+      val meta = ResourceState.withFinalizer(finalizerName)(person.metadata)
       Operations.apply(person.metadataUpdate(meta))
     }.void
 
@@ -118,13 +118,16 @@ object AdvancedMain extends TaskApp with Logging {
       val needsUpdate = { greeting: Greeting =>
         val shouldAdd = matches(person, greeting) && !references(person, greeting)
         val shouldRemove = !matches(person, greeting) && references(person, greeting)
-        shouldAdd || shouldRemove
+        if (shouldAdd || shouldRemove) {
+          val desc = if (shouldAdd) { "add" } else { "remove" }
+          logger.debug(s"Greeting needs to ${desc} this person: ${prettyPrintCustomResource[GreetingSpec,GreetingStatus].pretty(greeting)}")
+          true
+        } else {
+          false
+        }
       }
       logger.debug(s"Checking for necessary Greeting updates after change to ${prettyPrintCustomResource[PersonSpec,PersonStatus].pretty(person)}")
-      greetingsMirror.activeValues.filter(needsUpdate).map { greeting =>
-        logger.debug(s"Update required: ${prettyPrintCustomResource[GreetingSpec,GreetingStatus].pretty(greeting)}")
-        greeting
-      }.map(Id.of)
+      greetingsMirror.activeValues.filter(needsUpdate).map(Id.of)
     }
 
     new Controller[Greeting](operator, controllerInput)

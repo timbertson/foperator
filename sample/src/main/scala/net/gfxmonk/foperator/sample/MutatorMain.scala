@@ -1,7 +1,10 @@
 package net.gfxmonk.foperator.sample
 
+import java.util.concurrent.TimeUnit
+
 import cats.Eq
 import cats.effect.ExitCode
+import cats.implicits._
 import monix.eval.{Task, TaskApp}
 import monix.reactive.Observable
 import net.gfxmonk.foperator._
@@ -12,6 +15,8 @@ import play.api.libs.json.Format
 import skuber.api.client.KubernetesClient
 import skuber.{CustomResource, HasStatusSubresource, ObjectResource, ResourceDefinition}
 
+import scala.collection.mutable.ListBuffer
+import scala.concurrent.duration.FiniteDuration
 import scala.util.{Failure, Random, Success}
 
 object SimpleWithMutator extends TaskApp with Logging {
@@ -236,7 +241,66 @@ object MutatorMain extends Logging {
     )
   }
 
+  private def collectLive[T](map: ResourceMirror.ResourceStateMap[T])(implicit pp: PrettyPrint[T]): Task[Map[String, T]] = Task {
+    val (deleting, activePairs) = map.partitionMap {
+      case (key, ResourceState.Active(person)) => Right(key.name -> person)
+      case (_key, ResourceState.SoftDeleted(person)) => Left(person)
+    }
+    deleting.foreach { obj =>
+      logger.error(s"Person awaiting deletion: ${pp.pretty(obj)}")
+    }
+    activePairs.toMap
+  }
+
+  private def consistencyReport(verbose: Boolean, people: Map[String, Person], greetings: Map[String, Greeting])(implicit ppGreeting: PrettyPrint[Greeting], ppPerson: PrettyPrint[Person]) = Task {
+    greetings.values.foreach { greeting =>
+      val context = ListBuffer[String]()
+      val errors = ListBuffer[String]()
+      context.append(s"Checking: ${ppGreeting.pretty(greeting)}")
+      greeting.spec.surname match {
+        case None => {
+          val expected = SimpleMain.expectedStatus(greeting)
+          if(!greeting.status.exists(_ === expected)) {
+            errors.append(s"Greeting state inconsistent! Expected Some(${expected}), but was ${greeting.status}")
+          }
+        }
+        case Some(surname) => {
+          val expectedPeople = people.values.filter(_.spec.surname === surname)
+          val actualNames = greeting.status.map(_.people).getOrElse(Nil).toSet
+          val expectedNames = expectedPeople.map(_.name).toSet
+          (actualNames ++ expectedNames).toList.sorted.foreach { name =>
+            val pp = implicitly[PrettyPrint[Option[Person]]]
+            context.append(s" - person: ${pp.pretty(people.get(name))}")
+          }
+          if (expectedNames =!= actualNames) {
+            errors.append(s"Greeting state inconsistent! Expected ${expectedNames.toList.sorted}, got ${actualNames.toList.sorted}")
+          }
+          expectedPeople.foreach { person =>
+            if(!person.metadata.finalizers.getOrElse(Nil).contains_(AdvancedMain.finalizerName)) {
+              errors.append(s"Person is missing finalizer: ${ppPerson.pretty(person)}")
+            }
+          }
+        }
+      }
+      if (errors.nonEmpty) {
+        context.foreach(logger.info)
+        errors.foreach(logger.error)
+      } else if (verbose) {
+        context.foreach(logger.info)
+      }
+    }
+    logger.info(s"Checked ${greetings.size} greetings and ${people.size} people")
+  }
+
   private def mutate(people: ResourceMirror[Person], greetings: ResourceMirror[Greeting]): Task[Unit] = {
+    def checkConsistency(verbose: Boolean) = {
+      for {
+        peopleMap <- people.all.flatMap(collectLive(_))
+        greetingsMap <- greetings.all.flatMap(collectLive(_))
+        _ <- consistencyReport(verbose, peopleMap, greetingsMap)
+      } yield ()
+    }
+
     def nextAction(filter: Action => Boolean): Task[Action] = {
       def pick(root: Decision, limit: Int): Task[Action] = {
         if (limit <= 0) {
@@ -265,7 +329,7 @@ object MutatorMain extends Logging {
         logger.info(s"Running: ${prettyPrintAction.pretty(action)}")
         action.run.materialize
       }.flatMap {
-        case Success(_) => Task.unit
+        case Success(_) => Task.sleep(FiniteDuration(200, TimeUnit.MILLISECONDS)) >> checkConsistency(false)
         case Failure(err) => Task(logger.warn(s"^^^ Failed: $err"))
       }
     }
@@ -297,9 +361,10 @@ object MutatorMain extends Logging {
       case "m" => doSomething(_.isInstanceOf[Modify[_,_]])
       case "c" => doSomething(_.isInstanceOf[Create[_,_]])
       case "" => doSomething(_ => true)
+      case " " => checkConsistency(true)
       case other => {
         Task(logger.error(s"Unknown command: ${other}, try c/m/d"))
       }
-    }.completedL
+    }.mapEval(_ => Task(println("\n\n\n"))).completedL
   }
 }

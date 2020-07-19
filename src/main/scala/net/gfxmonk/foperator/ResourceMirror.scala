@@ -38,7 +38,8 @@ trait ResourceMirror[T] extends ResourceUpdates[T] {
 }
 
 object ResourceMirror extends Logging {
-  type IdMap[T] = Map[Id[T], T]
+  type ResourceMap[T] = Map[Id[T], T]
+  type ResourceStateMap[T] = Map[Id[T], ResourceState[T]]
 
   trait Builder[T<: ObjectResource] {
     // This could almost be a cats Resource, except our `use` ensures that asynchronous failure in the watch
