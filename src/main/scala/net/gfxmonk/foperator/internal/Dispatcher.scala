@@ -31,17 +31,22 @@ class Dispatcher[Loop[_], T<:ObjectResource](
   getResource: Id[T] => Task[Option[ResourceState[T]]],
   manager: ResourceLoop.Manager[Loop],
   permitScope: Dispatcher.PermitScope
-) {
+) extends Logging {
   def run(input: Observable[Input[Id[T]]]): Task[Unit] = {
     input.mapAccumulate(Map.empty[Id[T],Loop[T]]) { (map:Map[Id[T],Loop[T]], input) =>
       val result: (Map[Id[T],Loop[T]], Task[Unit]) = input match {
         case Input.HardDeleted(id) => {
+          logger.trace(s"Removing resource loop for ${id}")
           (map - id, map.get(id).map(manager.destroy).getOrElse(Task.unit))
         }
         case Input.Updated(id) => {
           map.get(id) match {
-            case Some(loop) => (map, manager.update(loop))
+            case Some(loop) => {
+              logger.trace(s"Triggering update for ${id}")
+              (map, manager.update(loop))
+            }
             case None => {
+              logger.trace(s"Creating resource loop for ${id}")
               val loop = manager.create[T](getResource(id), reconciler, permitScope)
               (map.updated(id, loop), Task.unit)
             }

@@ -1,5 +1,7 @@
 package net.gfxmonk.foperator.internal
 
+import java.util.concurrent.TimeUnit
+
 import monix.eval.Task
 import monix.execution.{Cancelable, Scheduler}
 import net.gfxmonk.foperator.internal.Dispatcher.PermitScope
@@ -50,12 +52,14 @@ class ResourceLoop[T](
   // waiting (has reconcile to do, but no semaphore available)
 
   import ResourceLoop._
+  private val logId = s"[${reconciler.hashCode}-${currentState.hashCode}]"
   @volatile private var modified = Promise[Unit]()
   private val cancelable = reconcileNow(ErrorCount.zero).runToFuture
 
   override def cancel(): Unit = cancelable.cancel()
 
   def update: Task[Unit] = Task {
+    logger.trace(s"$logId needs update...")
     val _: Boolean = modified.trySuccess(())
   }
 
@@ -69,25 +73,27 @@ class ResourceLoop[T](
       currentState.flatMap {
         case None => Task.pure(Success(ReconcileResult.Ok))
         case Some(obj) => {
+          logger.trace(s"$logId performing reconcile")
           reconciler.reconcile(obj).materialize
         }
       }
     }
 
+    Task(logger.trace(s"$logId Acquiring permit")) >>
     result.flatMap {
       case Success(result) => {
         val delay = result match {
           case ReconcileResult.RetryAfter(delay) => delay
           case _ => refreshInterval
         }
-        logger.info(s"Reconcile completed successfully, retrying in ${delay.toSeconds}s")
+        logger.info(s"$logId Reconcile completed successfully, retrying in ${delay.toSeconds}s")
         scheduleReconcile(ErrorCount.zero, delay)
       }
 
       case Failure(error) => {
         val nextCount = errorCount.increment
         val delay = backoffTime(nextCount).min(refreshInterval)
-        logger.warn(s"Reconcile failed: ${error}, retrying in ${delay.toSeconds}s")
+        logger.warn(s"$logId Reconcile failed: ${error}, retrying in ${delay.toSeconds}s")
         scheduleReconcile(nextCount, delay)
       }
     }

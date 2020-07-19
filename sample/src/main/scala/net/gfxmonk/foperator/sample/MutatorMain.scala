@@ -1,7 +1,6 @@
 package net.gfxmonk.foperator.sample
 
-import java.io.{BufferedReader, InputStreamReader}
-
+import cats.Eq
 import cats.effect.ExitCode
 import monix.eval.{Task, TaskApp}
 import monix.reactive.Observable
@@ -17,30 +16,20 @@ import scala.util.{Failure, Random, Success}
 
 object SimpleWithMutator extends TaskApp with Logging {
   override def run(args: List[String]): Task[ExitCode] = {
-//    import scala.jdk.CollectionConverters._
-//    Runtime.getRuntime.addShutdownHook(new Thread { () =>
-//      println("Stahp")
-//      Thread.sleep(1000)
-//      val live = Thread.getAllStackTraces.keySet.asScala.filterNot(_.isDaemon)
-//      println("live threads: " + live)
-//    })
-    SimpleMain.install() >> Task.parZip2(
-//      SimpleMain.run(Nil),
-      Task.unit,
-      MutatorMain.runMutator
-    ).map(_ => ExitCode.Success).doOnCancel { Task {
-      logger.warn("Exiting")
-    }}
-  }
+    MutatorMain.withResourceMirrors((greetings, people) => Task.parZip2(
+      SimpleMain.runWith(greetings),
+      MutatorMain.runMutator(greetings, people)
+    ).void)
+  }.map(_ => ExitCode.Success)
 }
 
 object AdvancedWithMutator extends TaskApp {
   override def run(args: List[String]): Task[ExitCode] = {
-    AdvancedMain.install() >> Task.parZip2(
-      AdvancedMain.run(Nil),
-      MutatorMain.runMutator
-    ).map(_ => ExitCode.Success)
-  }
+    AdvancedMain.install() >> MutatorMain.withResourceMirrors((greetings, people) => Task.parZip2(
+      AdvancedMain.runWith(greetings, people),
+      MutatorMain.runMutator(greetings, people)
+    ).void)
+  }.map(_ => ExitCode.Success)
 }
 
 // Mutator is an app for randomly mutating Greeting / People objects and observing the results.
@@ -49,36 +38,45 @@ object AdvancedWithMutator extends TaskApp {
 object MutatorMain extends Logging {
   import Implicits._
 
-  def runMutator: Task[ExitCode] = {
-    logger.info("Loading ... ")
+  // Since we want to share one mirror globally, we use this as the toplevel hook, and run
+  // all mutators / operators within the `op`
+  def withResourceMirrors(op: (ResourceMirror[Greeting], ResourceMirror[Person]) => Task[Unit]): Task[Unit] = {
+    Task(logger.info("Installing ... ")) >>
+    AdvancedMain.install() >>
+    Task(logger.info("Loading ... ")) >>
     ResourceMirror.all[Greeting].use { greetings =>
       ResourceMirror.all[Person].use { people =>
-        Task.parZip3(
-          watchResource(people),
-          watchResource(greetings),
-          mutate(people, greetings)
-        ).map(_ => ExitCode.Success)
+        Task(logger.info("Running ... ")) >>
+        op(greetings, people)
       }
     }
   }
 
+  def runMutator(greetings: ResourceMirror[Greeting], people: ResourceMirror[Person]): Task[ExitCode] = {
+    Task.parZip3(
+      watchResource(people),
+      watchResource(greetings),
+      mutate(people, greetings)
+    ).map(_ => ExitCode.Success)
+  }
+
   private def watchResource[T<:ObjectResource](mirror: ResourceMirror[T])(implicit pp: PrettyPrint[T], rd: ResourceDefinition[T]): Task[Unit] = {
-    mirror.ids.map {
-      case Input.HardDeleted(id) => id
-      case Input.Updated(id) => id
-    }.mapEval { id =>
-      mirror.all.flatMap { all =>
-        val desc = all.get(id) match {
-          case None => "[deleted]"
-          case Some(ResourceState.Active(resource)) => pp.pretty(resource)
-          case Some(ResourceState.SoftDeleted(resource)) => s"[finalizing] ${pp.pretty(resource)}"
+    val logId = s"${rd.spec.names.kind}"
+    mirror.all.map(_.size).flatMap { initialItems =>
+      mirror.ids.drop(initialItems).map {
+        case Input.HardDeleted(id) => id
+        case Input.Updated(id) => id
+      }.mapEval { id =>
+        mirror.all.flatMap { all =>
+          val desc = all.get(id) match {
+            case None => "[deleted]"
+            case Some(ResourceState.Active(resource)) => pp.pretty(resource)
+            case Some(ResourceState.SoftDeleted(resource)) => s"[finalizing] ${pp.pretty(resource)}"
+          }
+          Task(logger.debug(s"[$logId total:${all.size}] Saw update to ${id}: ${desc}"))
         }
-        Task {
-          logger.debug(s"Saw update to ${id}: ${desc}")
-          logger.debug(s"  (total: ${all.size} ${rd.spec.names.plural})")
-        }
-      }
-    }.completedL
+      }.completedL
+    }
   }
 
   sealed trait Decision // for traversing a decision tree
@@ -157,10 +155,30 @@ object MutatorMain extends Logging {
     rd: ResourceDefinition[CustomResource[Sp,St]],
     st: HasStatusSubresource[CustomResource[Sp,St]],
     client: KubernetesClient,
-    pp: PrettyPrint[CustomResourceUpdate[Sp,St]]
+    pp: PrettyPrint[CustomResourceUpdate[Sp,St]],
+    eqSp: Eq[Sp],
+    eqSt: Eq[St],
   ) extends Action {
     override def run: Task[Unit] = Operations.apply(update).void
     def pretty: String = s"Modify[${rd.spec.names.kind}](${pp.pretty(update)})"
+  }
+
+  object Modify {
+    def apply[Sp,St](update: CustomResourceUpdate[Sp,St])(
+      implicit fmt: Format[CustomResource[Sp,St]],
+      rd: ResourceDefinition[CustomResource[Sp,St]],
+      st: HasStatusSubresource[CustomResource[Sp,St]],
+      client: KubernetesClient,
+      pp: PrettyPrint[CustomResourceUpdate[Sp,St]],
+      eqSp: Eq[Sp],
+      eqSt: Eq[St],
+    ): Action = {
+      // override Modify constructor to return Noop when nothing is actually changing
+      Update.minimal(update) match {
+        case Update.Unchanged(_) => Noop
+        case other => new Modify(other)
+      }
+    }
   }
 
   def rootDecision(people: List[Person], greetings: List[Greeting]): Decision = {
@@ -219,22 +237,31 @@ object MutatorMain extends Logging {
   }
 
   private def mutate(people: ResourceMirror[Person], greetings: ResourceMirror[Greeting]): Task[Unit] = {
-    val nextAction: Task[Action] = {
-      def pick(root: Decision): Task[Action] = Decision.randomAction(root).flatMap {
-        case `Noop` => pick(root) // try again, assuming there's always at least one valid action
-        case other => Task.pure(other)
+    def nextAction(filter: Action => Boolean): Task[Action] = {
+      def pick(root: Decision, limit: Int): Task[Action] = {
+        if (limit <= 0) {
+          Task.pure(Noop)
+        } else {
+          Decision.randomAction(root).flatMap { action =>
+            if (action == Noop || !filter(action)) {
+              pick(root, limit-1)
+            } else {
+              Task.pure(action)
+            }
+          }
+        }
       }
 
       for {
         allPeople <- people.active.map(_.values.toList)
         allGreetings <- greetings.active.map(_.values.toList)
         root = rootDecision(allPeople, allGreetings)
-        action <- pick(root)
+        action <- pick(root, 100)
       } yield action
     }
 
-    def doSomething: Task[Unit] = {
-      nextAction.flatMap { action =>
+    def doSomething(filter: Action => Boolean): Task[Unit] = {
+      nextAction(filter).flatMap { action =>
         logger.info(s"Running: ${prettyPrintAction.pretty(action)}")
         action.run.materialize
       }.flatMap {
@@ -265,8 +292,14 @@ object MutatorMain extends Logging {
       // (but scala's IO.source seems to work fine without that)
       logger.info("--- ready (press return to mutate) ---")
       Observable.fromIterator(Task(scala.io.Source.stdin.getLines()))
-    }).concat.mapEval { input: String =>
-      doSomething
+    }).concat.mapEval {
+      case "d" => doSomething(_.isInstanceOf[Delete[_,_]])
+      case "m" => doSomething(_.isInstanceOf[Modify[_,_]])
+      case "c" => doSomething(_.isInstanceOf[Create[_,_]])
+      case "" => doSomething(_ => true)
+      case other => {
+        Task(logger.error(s"Unknown command: ${other}, try c/m/d"))
+      }
     }.completedL
   }
 }

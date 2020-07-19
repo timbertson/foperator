@@ -16,8 +16,9 @@ object Models {
       Id.unsafeCreate(classOf[CustomResource[PersonSpec,PersonStatus]], namespace = update.initial.metadata.namespace, name = name)
     }
   }
+  implicit val eqGreetingSpec: Eq[GreetingSpec] = Eq.fromUniversalEquals
+  implicit val eqGreetingStatus: Eq[GreetingStatus] = Eq.fromUniversalEquals
 
-  implicit def greetingStatusEq = Eq.fromUniversalEquals[GreetingStatus]
   type Greeting = CustomResource[GreetingSpec,GreetingStatus]
 
   implicit val statusFmt = Json.format[GreetingStatus]
@@ -47,6 +48,8 @@ object Models {
   /** Person */
   case class PersonSpec(firstName: String, surname: String)
   case class PersonStatus(value: Option[String] = None)
+  implicit val eqPersonSpec: Eq[PersonSpec] = Eq.fromUniversalEquals
+  implicit val eqPersonStatus: Eq[PersonStatus] = Eq.fromUniversalEquals
 
   type Person = CustomResource[PersonSpec,PersonStatus]
   val personSpec = CustomResourceDefinition.Spec(

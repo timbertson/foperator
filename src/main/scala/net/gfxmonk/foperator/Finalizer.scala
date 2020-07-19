@@ -1,9 +1,11 @@
 package net.gfxmonk.foperator
 
+import cats.Eq
 import cats.data.NonEmptyList
 import monix.eval.Task
+import net.gfxmonk.foperator.internal.Logging
 import play.api.libs.json.Format
-import skuber.{CustomResource, HasStatusSubresource, ResourceDefinition}
+import skuber.{CustomResource, HasStatusSubresource, ObjectMeta, ResourceDefinition}
 import skuber.api.client.KubernetesClient
 
 // Finalizer is much like a reconciler, except it deals with ResourceState[T]
@@ -17,9 +19,10 @@ class CustomResourceFinalizer[Sp,St](name: String, destroy: CustomResource[Sp,St
                                       implicit fmt: Format[CustomResource[Sp,St]],
                                       rd: ResourceDefinition[CustomResource[Sp,St]],
                                       st: HasStatusSubresource[CustomResource[Sp,St]],
-                                      client: KubernetesClient
-                                    ) extends Finalizer[CustomResource[Sp,St]] {
-
+                                      client: KubernetesClient,
+                                      eqSp: Eq[Sp],
+                                      eqSt: Eq[St],
+                                    ) extends Finalizer[CustomResource[Sp,St]] with Logging {
   import net.gfxmonk.foperator.implicits._
 
   private def reconcileFn(resource: ResourceState[CustomResource[Sp,St]]): Task[CustomResourceUpdate[Sp,St]] = {
@@ -31,6 +34,7 @@ class CustomResourceFinalizer[Sp,St](name: String, destroy: CustomResource[Sp,St
         // Soft deleted, apply finalizer and remove
         if (hasMine(resource)) {
           // byee!
+          logger.debug(s"Finalizing ${Id.of(resource)} [$name]")
           destroy(resource).map { (_:Unit) =>
             val newFinalizers = NonEmptyList.fromList(finalizers(resource).filterNot(_ == name)).map(_.toList)
             // TODO ensure `None` actually deletes the finalizer
@@ -42,18 +46,20 @@ class CustomResourceFinalizer[Sp,St](name: String, destroy: CustomResource[Sp,St
         }
       }
       case ResourceState.Active(resource) =>
-        // Not deleted, add if missing:
-        Task.pure(if (hasMine(resource)) { resource.unchanged } else {
-          resource.metadataUpdate(resource.metadata.copy(
-            finalizers = Some(name :: finalizers(resource))
-          ))
-        })
+        // TODO don't auto-add this, use Reconciler.withFinalizer or Reconciler.addFinalizerIf
+        ???
+//        // Not deleted, add if missing:
+//        logger.debug(s"Adding finalizer to ${Id.of(resource)} [$name]")
+//        Task.pure(if (hasMine(resource)) { resource.unchanged } else {
+//          resource.metadataUpdate(resource.metadata.copy(
+//            finalizers = Some(name :: finalizers(resource))
+//          ))
+//        })
     }
   }
 
   override def reconcileState(resource: ResourceState[CustomResource[Sp,St]]): Task[ResourceState[CustomResource[Sp,St]]] = {
-    // TODO shouldn't need all these explicits
-    reconcileFn(resource).flatMap(Operations.apply(_)(fmt, rd, st, client)).map(ResourceState.of)
+    reconcileFn(resource).flatMap(op => Operations.apply(op)).map(ResourceState.of)
   }
 }
 
@@ -71,7 +77,9 @@ object Finalizer {
     implicit fmt: Format[CustomResource[Sp,St]],
     rd: ResourceDefinition[CustomResource[Sp,St]],
     st: HasStatusSubresource[CustomResource[Sp,St]],
-    client: KubernetesClient
+    client: KubernetesClient,
+    eqSp: Eq[Sp],
+    eqSt: Eq[St],
   ): CustomResourceFinalizer[Sp,St] = new CustomResourceFinalizer(name, fn)
 
   def empty[T]: Finalizer[T] = new Finalizer[T] {

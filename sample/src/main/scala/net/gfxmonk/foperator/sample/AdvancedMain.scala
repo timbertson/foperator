@@ -5,18 +5,34 @@ import cats.implicits._
 import monix.eval.{Task, TaskApp}
 import net.gfxmonk.foperator._
 import net.gfxmonk.foperator.implicits._
+import net.gfxmonk.foperator.internal.Logging
 import skuber.api.client.KubernetesClient
 import skuber.apiextensions.CustomResourceDefinition
 
 import scala.util.Try
 
-object AdvancedMain extends TaskApp {
+object AdvancedMain extends TaskApp with Logging {
   implicit val _scheduler = scheduler
 
   import Implicits._
   import Models._
 
   val finalizerName = s"AdvancedMain.${greetingSpec.apiGroup}"
+
+  override def run(args: List[String]): Task[ExitCode] = {
+    install() >> ResourceMirror.all[Greeting].use { greetings =>
+      ResourceMirror.all[Person].use { people =>
+        runWith(greetings, people).map(_ => ExitCode.Success)
+      }
+    }
+  }
+
+  def runWith(greetings: ResourceMirror[Greeting], people: ResourceMirror[Person]): Task[Unit] = {
+    Task.parZip2(
+      greetingController(greetings, people).run,
+      personController(greetings, people).run
+    ).void
+  }
 
   def install()(implicit client: KubernetesClient) = {
     SimpleMain.install() >>
@@ -36,7 +52,10 @@ object AdvancedMain extends TaskApp {
   // Given a greeting update, apply it to the cluster.
   // This differs from the default Operations.applyUpdate because
   // it also installs finalizers on referenced people.
-  private def greetingUpdater(peopleMirror: ResourceMirror[Person])(update: Update.Status[Greeting, GreetingStatus]): Task[ReconcileResult] = {
+  private def greetingUpdater(peopleMirror: ResourceMirror[Person])
+    (update: Update.Status[Greeting, GreetingStatus])
+    (implicit pp: PrettyPrint[CustomResourceUpdate[GreetingSpec, GreetingStatus]]): Task[ReconcileResult] = {
+    logger.info(s"Reconciled greeting, applying update: ${pp.pretty(Update.minimal(update))}")
     val ids = GreetingStatus.peopleIds(update)
     val findPeople: Task[List[Person]] = {
       peopleMirror.active.flatMap { all =>
@@ -67,7 +86,7 @@ object AdvancedMain extends TaskApp {
     peopleMirror: ResourceMirror[Person]
   ): Controller[Greeting] = {
     val operator = Operator[Greeting](
-      reconciler = Reconciler.updater(greetingUpdater(peopleMirror)) { greeting =>
+      reconciler = Reconciler.updaterWith(greetingUpdater(peopleMirror)) { greeting =>
         val newStatus = greeting.spec.surname match {
 
           // if there's no surname, just do what SimpleMain does
@@ -79,8 +98,12 @@ object AdvancedMain extends TaskApp {
                 person.spec.surname == surname
               }.toList.sortBy(_.spec.firstName)
 
+              val familyMembers = people match {
+                case Nil => s"[empty]"
+                case people => people.map(_.spec.firstName).mkString(", ")
+              }
               GreetingStatus(
-                message = s"Hello to ${people.map(_.spec.firstName).mkString(", ")}",
+                message = s"Hello to the ${surname} family: ${familyMembers}",
                 people = people.map(_.metadata.name)
               )
             }
@@ -97,7 +120,11 @@ object AdvancedMain extends TaskApp {
         val shouldRemove = !matches(person, greeting) && references(person, greeting)
         shouldAdd || shouldRemove
       }
-      greetingsMirror.activeValues.filter(needsUpdate).map(Id.of)
+      logger.debug(s"Checking for necessary Greeting updates after change to ${prettyPrintCustomResource[PersonSpec,PersonStatus].pretty(person)}")
+      greetingsMirror.activeValues.filter(needsUpdate).map { greeting =>
+        logger.debug(s"Update required: ${prettyPrintCustomResource[GreetingSpec,GreetingStatus].pretty(greeting)}")
+        greeting
+      }.map(Id.of)
     }
 
     new Controller[Greeting](operator, controllerInput)
@@ -123,16 +150,5 @@ object AdvancedMain extends TaskApp {
     val operator = Operator[Person](finalizer = Finalizer(finalizerName)(finalize))
 
     new Controller[Person](operator, ControllerInput(peopleMirror))
-  }
-
-  override def run(args: List[String]): Task[ExitCode] = {
-    install() >> ResourceMirror.all[Greeting].use { greetings =>
-      ResourceMirror.all[Person].use { people =>
-        Task.parZip2(
-          greetingController(greetings, people).run,
-          personController(greetings, people).run
-        ).map(_ => ExitCode.Success)
-      }
-    }
   }
 }

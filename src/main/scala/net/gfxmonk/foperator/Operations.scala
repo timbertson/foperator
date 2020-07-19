@@ -1,31 +1,57 @@
 package net.gfxmonk.foperator
 
+import cats.{Applicative, Eq}
+import cats.implicits._
 import monix.eval.Task
 import play.api.libs.json.Format
 import skuber.api.client.{KubernetesClient, LoggingContext}
 import skuber.{ObjectResource, _}
 import cats.implicits._
 import net.gfxmonk.foperator.internal.Logging
+import net.gfxmonk.foperator.implicits._
 
 import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
-sealed trait Update[+T, +Sp, +St]
+sealed trait Update[T<:ObjectResource, +Sp, +St] {
+  def initial: T
+  def id: Id[T] = Id.of(initial)
+  override def toString: Finalizer = s"${this.getClass.getSimpleName}(${id}, ...)"
+}
+
 object Update {
-  case class Spec[T, Sp](initial: T, spec: Sp) extends Update[T, Sp, Nothing]
-  case class Status[T, St](initial: T, status: St) extends Update[T, Nothing, St]
-  case class Metadata[T](initial: T, metadata: ObjectMeta) extends Update[T, Nothing, Nothing]
-  case class None[T](value: T) extends Update[T, Nothing, Nothing]
+  // A subset of update that excludes Unchanged
+  sealed trait Change[T<:ObjectResource, +Sp, +St] extends Update[T,Sp,St]
+
+  case class Spec[T<:ObjectResource, Sp](initial: T, spec: Sp) extends Change[T, Sp, Nothing]
+  case class Status[T<:ObjectResource, St](initial: T, status: St) extends Change[T, Nothing, St]
+  case class Metadata[T<:ObjectResource](initial: T, metadata: ObjectMeta) extends Change[T, Nothing, Nothing]
+  case class Unchanged[T<:ObjectResource](initial: T) extends Update[T, Nothing, Nothing]
 
   // TODO can we use something more general than CustomResource
-  def minimal[Sp,St](update: CustomResourceUpdate[Sp, St]): CustomResourceUpdate[Sp, St] = {
+  def minimal[Sp,St](update: CustomResourceUpdate[Sp, St])(implicit eqSp: Eq[Sp], eqSt: Eq[St]): CustomResourceUpdate[Sp, St] = {
     update match {
-      case Status(initial, status) => if(initial.status == status) None(initial) else update
-      case Spec(initial, spec) => if(initial.spec == spec) None(initial) else update
-      case Metadata(initial, metadata) => if(initial.metadata == metadata) None(initial) else update
-      case None(initial) => None(initial)
+      case Status(initial, status) => if(initial.status.exists(_ === status)) Unchanged(initial) else update
+      case Spec(initial, spec) => if(initial.spec === spec) Unchanged(initial) else update
+      case Metadata(initial, metadata) => if(initial.metadata === metadata) Unchanged(initial) else update
+      case Unchanged(initial) => Unchanged(initial)
     }
   }
+
+//  def fold[T<:ObjectResource,Sp,St,R](update: Update[T,Sp,St])(passthru: T => R)(apply: Change[T,Sp,St] => R): R = update match {
+//    case Update.Unchanged(initial) => passthru(initial)
+//    case other:Change[T,Sp,St] => apply(other)
+//  }
+//
+  def change[Sp,St](update: CustomResourceUpdate[Sp,St])(implicit eqSp: Eq[Sp], eqSt: Eq[St]):
+    Either[CustomResource[Sp,St],Change[CustomResource[Sp,St],Sp,St]] = minimal(update) match {
+    case Update.Unchanged(initial) => Left(initial)
+    case other:Change[CustomResource[Sp,St],Sp,St] => Right(other)
+  }
+//
+//  def applyWith[F[_], T<:ObjectResource,Sp,St](update: Update[T,Sp,St])(apply: Change[T,Sp,St] => F[T])(implicit F: Applicative[F]): F[T] = {
+//    fold(update)(F.pure)(apply)
+//  }
 }
 
 object Operations extends Logging {
@@ -53,16 +79,20 @@ object Operations extends Logging {
     implicit fmt: Format[CustomResource[Sp,St]],
     rd: ResourceDefinition[CustomResource[Sp,St]],
     st: HasStatusSubresource[CustomResource[Sp,St]],
-    client: KubernetesClient
+    client: KubernetesClient,
+    eqSp: Eq[Sp],
+    eqSt: Eq[St],
   ): Task[CustomResource[Sp,St]] = {
     type Resource = CustomResource[Sp,St]
     implicit val hasStatus: HasStatusSubresource[Resource] = st // TODO why is this needed?
-    Task.fromFuture(Update.minimal(update) match {
-      // TODO no updateMetadata? Is metadata not a subresource?
-      case Update.Metadata(original, meta) => client.update(original.withMetadata(meta))
-      case Update.Spec(original, sp) => client.update(original.copy(spec = sp))
-      case Update.Status(original, st) => client.updateStatus(original.withStatus(st))
-      case Update.None(original) => Future.successful(original)
+    Update.change(update).fold(Task.pure, { change =>
+      logger.debug(s"Applying update ${change}")
+      Task.fromFuture(change match {
+        // TODO no updateMetadata? Is metadata not a subresource?
+        case Update.Metadata(original, meta) => client.update(original.withMetadata(meta))
+        case Update.Spec(original, sp) => client.update(original.copy(spec = sp))
+        case Update.Status(original, st) => client.updateStatus(original.withStatus(st))
+      })
     })
   }
 
@@ -70,7 +100,9 @@ object Operations extends Logging {
     implicit fmt: Format[CustomResource[Sp,St]],
     rd: ResourceDefinition[CustomResource[Sp,St]],
     st: HasStatusSubresource[CustomResource[Sp,St]],
-    client: KubernetesClient
+    client: KubernetesClient,
+    eqSp: Eq[Sp],
+    eqSt: Eq[St],
   ): Task[Unit] = {
     updates.traverse(update => Operations.apply(update)).void
   }

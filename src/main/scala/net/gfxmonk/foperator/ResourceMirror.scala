@@ -21,7 +21,6 @@ trait ResourceUpdates[T] {
 }
 
 trait ResourceMirror[T] extends ResourceUpdates[T] {
-  // TODO: make all of these Task?
   def all: Task[Map[Id[T], ResourceState[T]]]
   def active: Task[Map[Id[T], T]] = all.map(_.mapFilter(ResourceState.active))
 
@@ -38,7 +37,7 @@ trait ResourceMirror[T] extends ResourceUpdates[T] {
   }
 }
 
-object ResourceMirror {
+object ResourceMirror extends Logging {
   type IdMap[T] = Map[Id[T], T]
 
   trait Builder[T<: ObjectResource] {
@@ -92,6 +91,7 @@ object ResourceMirror {
           ))
           // TODO: check that watch ignores status updates to avoid loops (does it depend on whether there's a status subresource?)
           val updates = Observable.fromReactivePublisher(source.runWith(Sink.asPublisher(fanout=false)))
+          logger.debug(s"ResourceMirror[${rd.spec.names.kind}] in sync, watching for updates")
           new ResourceMirrorImpl[T](listResource.toList, updates)
         }
       }
@@ -111,11 +111,17 @@ object ResourceMirrorImpl {
  *    watcher (and other observers) to fall behind.
  *    In practice, this is typically consumed by Dispatcher, which doesn't backpressure.
  */
-private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: Observable[WatchEvent[T]])(implicit scheduler: Scheduler)
+private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: Observable[WatchEvent[T]])(implicit scheduler: Scheduler, rd: ResourceDefinition[T])
   extends AutoCloseable with ResourceMirror[T] with Logging {
   import ResourceMirrorImpl._
   private val state = Atomic(initial.map(obj => Id.of(obj) -> ResourceState.of(obj)).toMap)
   private val listeners: MVar[Task, Set[IdSubscriber[T]]] = MVar[Task].of(Set.empty[IdSubscriber[T]]).runSyncUnsafe()
+  private val logIdCommon = s"${rd.spec.names.kind}-${this.hashCode}"
+  if(logger.isTraceEnabled) {
+    state.get.values.foreach { res =>
+      logger.trace(s"[$logIdCommon initial] ${res}")
+    }
+  }
 
   private def transformSubscribers(fn: Set[IdSubscriber[T]] => Set[IdSubscriber[T]]): Task[Unit] = {
     listeners.take.flatMap(subs => listeners.put(fn(subs)))
@@ -123,6 +129,11 @@ private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: 
 
   private [foperator] val future = updates.consumeWith(Consumer.foreachEval { (event:WatchEvent[T]) =>
     val id = Id.of(event._object)
+    if (logger.isTraceEnabled) {
+      logger.debug(s"[${logIdCommon}] Saw event ${event._type} on ${id}, object = ${event._object}")
+    } else {
+      logger.debug(s"[${logIdCommon}] Saw event ${event._type} on ${id}")
+    }
     val input = event._type match {
       case EventType.ERROR => ??? // TODO log and ignore?
       case EventType.DELETED => {
@@ -142,13 +153,15 @@ private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: 
   def ids: Observable[Input[Id[T]]] = {
     new Observable[Input[Id[T]]] {
       override def unsafeSubscribeFn(subscriber: Subscriber[Input[Id[T]]]): Cancelable = {
+        val logId = s"[${logIdCommon}-${subscriber.hashCode}]"
+        logger.debug(s"$logId Adding subscriber")
         def emit(id: Input[Id[T]]): Task[Unit] = {
           Task.defer {
             val future = subscriber.onNext(id)
             future.value match {
               case Some(value) => Task.fromTry(value)
               case None => {
-                logger.warn(s"A subscriber to ResourceMirror.ids is not synchronously accepting new items." +
+                logger.warn(s"$logId Subscriber not synchronously accepting new items." +
                   " This will delay updates to every subscriber, you should make this synchronous (buffering if necessary).")
                 Task.fromFuture(future)
               }
@@ -158,7 +171,10 @@ private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: 
             case Ack.Stop => cancel
           }
         }
-        def cancel = transformSubscribers(s => s - emit)
+        def cancel = transformSubscribers { s =>
+          logger.debug(s"$logId Removing subscriber")
+          s - emit
+        }
 
         (for {
           // take listeners mutex while sending initial set, so that
