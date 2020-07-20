@@ -3,21 +3,33 @@ package net.gfxmonk.foperator.sample
 import cats.effect.ExitCode
 import cats.implicits._
 import monix.eval.{Task, TaskApp}
+import monix.execution.Scheduler
 import net.gfxmonk.foperator._
 import net.gfxmonk.foperator.implicits._
 import net.gfxmonk.foperator.internal.Logging
 import skuber.api.client.KubernetesClient
 import skuber.apiextensions.CustomResourceDefinition
+import skuber.k8sInit
 
 import scala.util.Try
 
-object AdvancedMain extends TaskApp with Logging {
-  implicit val _scheduler = scheduler
+object AdvancedMain {
+  def main(args: Array[String]): Unit = {
+    import Implicits._
+    implicit val scheduler: Scheduler = Scheduler.global
+    implicit val client: KubernetesClient = k8sInit
+    (new AdvancedOperator).main(args)
+  }
+}
 
+object AdvancedOperator {
+  val finalizerName = s"AdvancedMain.${Models.greetingSpec.apiGroup}"
+}
+
+class AdvancedOperator(implicit scheduler: Scheduler, client: KubernetesClient) extends TaskApp with Logging {
   import Implicits._
   import Models._
-
-  val finalizerName = s"AdvancedMain.${greetingSpec.apiGroup}"
+  import AdvancedOperator._
 
   override def run(args: List[String]): Task[ExitCode] = {
     install() >> ResourceMirror.all[Greeting].use { greetings =>
@@ -34,8 +46,8 @@ object AdvancedMain extends TaskApp with Logging {
     ).void
   }
 
-  def install()(implicit client: KubernetesClient) = {
-    SimpleMain.install() >>
+  def install() = {
+    (new SimpleOperator).install() >>
       Operations.write[CustomResourceDefinition]((res, meta) => res.copy(metadata = meta))(personCrd).void
   }
 
@@ -89,8 +101,8 @@ object AdvancedMain extends TaskApp with Logging {
       reconciler = Reconciler.updaterWith(greetingUpdater(peopleMirror)) { greeting =>
         val newStatus = greeting.spec.surname match {
 
-          // if there's no surname, just do what SimpleMain does
-          case None => Task.pure(SimpleMain.expectedStatus(greeting))
+          // if there's no surname, just do what SimpleOperator does
+          case None => Task.pure(SimpleOperator.expectedStatus(greeting))
 
           case Some(surname) => {
             peopleMirror.active.map { activePeople =>

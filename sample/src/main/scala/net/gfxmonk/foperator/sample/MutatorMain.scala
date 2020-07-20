@@ -6,6 +6,7 @@ import cats.Eq
 import cats.effect.ExitCode
 import cats.implicits._
 import monix.eval.{Task, TaskApp}
+import monix.execution.Scheduler
 import monix.reactive.Observable
 import net.gfxmonk.foperator._
 import net.gfxmonk.foperator.internal.Logging
@@ -13,7 +14,7 @@ import net.gfxmonk.foperator.sample.Implicits._
 import net.gfxmonk.foperator.sample.Models.{Greeting, GreetingSpec, Person, PersonSpec}
 import play.api.libs.json.Format
 import skuber.api.client.KubernetesClient
-import skuber.{CustomResource, HasStatusSubresource, ObjectResource, ResourceDefinition}
+import skuber.{CustomResource, HasStatusSubresource, ObjectResource, ResourceDefinition, k8sInit}
 
 import scala.collection.mutable.ListBuffer
 import scala.concurrent.duration.FiniteDuration
@@ -21,18 +22,27 @@ import scala.util.{Failure, Random, Success}
 
 object SimpleWithMutator extends TaskApp with Logging {
   override def run(args: List[String]): Task[ExitCode] = {
-    MutatorMain.withResourceMirrors((greetings, people) => Task.parZip2(
-      SimpleMain.runWith(greetings),
-      MutatorMain.runMutator(greetings, people)
+    implicit val client = k8sInit
+    implicit val s = scheduler
+    val mutator = new MutatorMain
+    val simple = new SimpleOperator
+    val advanced = new AdvancedOperator
+    advanced.install() >> mutator.withResourceMirrors((greetings, people) => Task.parZip2(
+      simple.runWith(greetings),
+      mutator.runMutator(greetings, people)
     ).void)
   }.map(_ => ExitCode.Success)
 }
 
 object AdvancedWithMutator extends TaskApp {
   override def run(args: List[String]): Task[ExitCode] = {
-    AdvancedMain.install() >> MutatorMain.withResourceMirrors((greetings, people) => Task.parZip2(
-      AdvancedMain.runWith(greetings, people),
-      MutatorMain.runMutator(greetings, people)
+    implicit val client = k8sInit
+    implicit val s = scheduler
+    val mutator = new MutatorMain
+    val advanced = new AdvancedOperator
+    advanced.install() >> mutator.withResourceMirrors((greetings, people) => Task.parZip2(
+      advanced.runWith(greetings, people),
+      mutator.runMutator(greetings, people)
     ).void)
   }.map(_ => ExitCode.Success)
 }
@@ -40,50 +50,7 @@ object AdvancedWithMutator extends TaskApp {
 // Mutator is an app for randomly mutating Greeting / People objects and observing the results.
 // It logs all changes to these resources, and attempts a mutation whenever you press Return
 // (Not all mutations succeed, it'll pick a new mutation on failure)
-object MutatorMain extends Logging {
-  import Implicits._
-
-  // Since we want to share one mirror globally, we use this as the toplevel hook, and run
-  // all mutators / operators within the `op`
-  def withResourceMirrors(op: (ResourceMirror[Greeting], ResourceMirror[Person]) => Task[Unit]): Task[Unit] = {
-    Task(logger.info("Installing ... ")) >>
-    AdvancedMain.install() >>
-    Task(logger.info("Loading ... ")) >>
-    ResourceMirror.all[Greeting].use { greetings =>
-      ResourceMirror.all[Person].use { people =>
-        Task(logger.info("Running ... ")) >>
-        op(greetings, people)
-      }
-    }
-  }
-
-  def runMutator(greetings: ResourceMirror[Greeting], people: ResourceMirror[Person]): Task[ExitCode] = {
-    Task.parZip3(
-      watchResource(people),
-      watchResource(greetings),
-      mutate(people, greetings)
-    ).map(_ => ExitCode.Success)
-  }
-
-  private def watchResource[T<:ObjectResource](mirror: ResourceMirror[T])(implicit pp: PrettyPrint[T], rd: ResourceDefinition[T]): Task[Unit] = {
-    val logId = s"${rd.spec.names.kind}"
-    mirror.all.map(_.size).flatMap { initialItems =>
-      mirror.ids.drop(initialItems).map {
-        case Input.HardDeleted(id) => id
-        case Input.Updated(id) => id
-      }.mapEval { id =>
-        mirror.all.flatMap { all =>
-          val desc = all.get(id) match {
-            case None => "[deleted]"
-            case Some(ResourceState.Active(resource)) => pp.pretty(resource)
-            case Some(ResourceState.SoftDeleted(resource)) => s"[finalizing] ${pp.pretty(resource)}"
-          }
-          Task(logger.debug(s"[$logId total:${all.size}] Saw update to ${id}: ${desc}"))
-        }
-      }.completedL
-    }
-  }
-
+object MutatorMain {
   sealed trait Decision // for traversing a decision tree
 
   object Decision {
@@ -127,7 +94,7 @@ object MutatorMain extends Logging {
     override def pretty: String = "Noop"
   }
 
-  case class Delete[Sp,St](resource: CustomResource[Sp,St])(implicit rd: ResourceDefinition[CustomResource[Sp,St]], pp: PrettyPrint[CustomResource[Sp,St]]) extends Action {
+  case class Delete[Sp,St](resource: CustomResource[Sp,St])(implicit rd: ResourceDefinition[CustomResource[Sp,St]], pp: PrettyPrint[CustomResource[Sp,St]], client: KubernetesClient) extends Action {
     override def run: Task[Unit] = Task.deferFuture(client.delete(resource.name))
 
     override def pretty: String = s"Delete[${rd.spec.names.kind}](${pp.pretty(resource)})"
@@ -136,7 +103,8 @@ object MutatorMain extends Logging {
   case class Create[Sp,St](resource: CustomResource[Sp,St])(
     implicit rd: ResourceDefinition[CustomResource[Sp,St]],
     fmt: Format[CustomResource[Sp,St]],
-    pp: PrettyPrint[Sp]
+    pp: PrettyPrint[Sp],
+    client: KubernetesClient
   ) extends Action {
     def pretty: String = s"Create[${rd.spec.names.kind}](${pp.pretty(resource.spec)})"
 
@@ -159,10 +127,10 @@ object MutatorMain extends Logging {
     implicit fmt: Format[CustomResource[Sp,St]],
     rd: ResourceDefinition[CustomResource[Sp,St]],
     st: HasStatusSubresource[CustomResource[Sp,St]],
-    client: KubernetesClient,
     pp: PrettyPrint[CustomResourceUpdate[Sp,St]],
     eqSp: Eq[Sp],
     eqSt: Eq[St],
+    client: KubernetesClient
   ) extends Action {
     override def run: Task[Unit] = Operations.apply(update).void
     def pretty: String = s"Modify[${rd.spec.names.kind}](${pp.pretty(update)})"
@@ -173,10 +141,10 @@ object MutatorMain extends Logging {
       implicit fmt: Format[CustomResource[Sp,St]],
       rd: ResourceDefinition[CustomResource[Sp,St]],
       st: HasStatusSubresource[CustomResource[Sp,St]],
-      client: KubernetesClient,
       pp: PrettyPrint[CustomResourceUpdate[Sp,St]],
       eqSp: Eq[Sp],
       eqSt: Eq[St],
+      client: KubernetesClient
     ): Action = {
       // override Modify constructor to return Noop when nothing is actually changing
       Update.minimal(update) match {
@@ -185,6 +153,51 @@ object MutatorMain extends Logging {
       }
     }
   }
+}
+
+class MutatorMain(implicit scheduler: Scheduler, client: KubernetesClient) extends Logging {
+  import Implicits._
+  import MutatorMain._
+
+  // Since we want to share one mirror globally, we use this as the toplevel hook, and run
+  // all mutators / operators within the `op`
+  def withResourceMirrors(op: (ResourceMirror[Greeting], ResourceMirror[Person]) => Task[Unit]): Task[Unit] = {
+    Task(logger.info("Loading ... ")) >>
+    ResourceMirror.all[Greeting].use { greetings =>
+      ResourceMirror.all[Person].use { people =>
+        Task(logger.info("Running ... ")) >>
+        op(greetings, people)
+      }
+    }
+  }
+
+  def runMutator(greetings: ResourceMirror[Greeting], people: ResourceMirror[Person]): Task[ExitCode] = {
+    Task.parZip3(
+      watchResource(people),
+      watchResource(greetings),
+      mutate(people, greetings)
+    ).map(_ => ExitCode.Success)
+  }
+
+  private def watchResource[T<:ObjectResource](mirror: ResourceMirror[T])(implicit pp: PrettyPrint[T], rd: ResourceDefinition[T]): Task[Unit] = {
+    val logId = s"${rd.spec.names.kind}"
+    mirror.all.map(_.size).flatMap { initialItems =>
+      mirror.ids.drop(initialItems).map {
+        case Input.HardDeleted(id) => id
+        case Input.Updated(id) => id
+      }.mapEval { id =>
+        mirror.all.flatMap { all =>
+          val desc = all.get(id) match {
+            case None => "[deleted]"
+            case Some(ResourceState.Active(resource)) => pp.pretty(resource)
+            case Some(ResourceState.SoftDeleted(resource)) => s"[finalizing] ${pp.pretty(resource)}"
+          }
+          Task(logger.debug(s"[$logId total:${all.size}] Saw update to ${id}: ${desc}"))
+        }
+      }.completedL
+    }
+  }
+
 
   def rootDecision(people: List[Person], greetings: List[Greeting]): Decision = {
     val deletePerson = Decision(people)(person => Decision(Delete(person)))
@@ -259,7 +272,7 @@ object MutatorMain extends Logging {
       context.append(s"Checking: ${ppGreeting.pretty(greeting)}")
       greeting.spec.surname match {
         case None => {
-          val expected = SimpleMain.expectedStatus(greeting)
+          val expected = SimpleOperator.expectedStatus(greeting)
           if(!greeting.status.exists(_ === expected)) {
             errors.append(s"Greeting state inconsistent! Expected Some(${expected}), but was ${greeting.status}")
           }
@@ -276,7 +289,7 @@ object MutatorMain extends Logging {
             errors.append(s"Greeting state inconsistent! Expected ${expectedNames.toList.sorted}, got ${actualNames.toList.sorted}")
           }
           expectedPeople.foreach { person =>
-            if(!person.metadata.finalizers.getOrElse(Nil).contains_(AdvancedMain.finalizerName)) {
+            if(!person.metadata.finalizers.getOrElse(Nil).contains_(AdvancedOperator.finalizerName)) {
               errors.append(s"Person is missing finalizer: ${ppPerson.pretty(person)}")
             }
           }

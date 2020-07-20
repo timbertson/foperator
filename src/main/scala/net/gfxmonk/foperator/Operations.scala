@@ -61,7 +61,7 @@ object Operations extends Logging {
       case Success(resource) => Task.pure(resource)
       case Failure(err: K8SException) if err.status.code.contains(409) => {
         // resource exists, update based on the current resource version
-        Task.deferFuture(client.get[O](resource.name)).flatMap { existing =>
+        Task.deferFuture(client.getInNamespace[O](resource.name, resource.namespace)).flatMap { existing =>
           val currentVersion = existing.metadata.resourceVersion
           val newMeta = resource.metadata.copy(resourceVersion = currentVersion)
           val updatedObj = withMetadata(resource, newMeta)

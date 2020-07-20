@@ -13,7 +13,7 @@ object Models {
   case class GreetingStatus(message: String, people: List[String])
   object GreetingStatus {
     def peopleIds(update: Update.Status[Greeting, GreetingStatus]): List[Id[Person]] = update.status.people.map { name =>
-      Id.unsafeCreate(classOf[CustomResource[PersonSpec,PersonStatus]], namespace = update.initial.metadata.namespace, name = name)
+      Id.createUnsafe(namespace = update.initial.metadata.namespace, name = name)
     }
   }
   implicit val eqGreetingSpec: Eq[GreetingSpec] = Eq.fromUniversalEquals

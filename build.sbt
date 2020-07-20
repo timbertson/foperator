@@ -21,6 +21,14 @@ lazy val lib = (project in file("."))
     name := "foperator"
   )
 
+lazy val testkit = (project in file("testkit"))
+  .settings(common)
+  .settings(
+    name := "foperator-testkit",
+    libraryDependencies ++= Seq(
+    ),
+  ).dependsOn(lib)
+
 lazy val sample = (project in file("sample"))
   .settings(common)
   .settings(
@@ -33,4 +41,4 @@ lazy val sample = (project in file("sample"))
       "simple-mutator" -> "net.gfxmonk.foperator.sample.SimpleWithMutator",
       "advanced-mutator" -> "net.gfxmonk.foperator.sample.AdvancedWithMutator",
     ),
-  ).dependsOn(lib).enablePlugins(PackPlugin)
+  ).dependsOn(lib, testkit).enablePlugins(PackPlugin)

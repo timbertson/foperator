@@ -9,10 +9,10 @@ import net.gfxmonk.foperator.sample.MutatorMain.Action
 import skuber.{CustomResource, ObjectMeta, ResourceDefinition, k8sInit}
 
 object Implicits {
+  // TODO inject scheduler
   implicit val system = ActorSystem()
   implicit val materializer = ActorMaterializer()
   implicit val dispatcher = system.dispatcher
-  implicit val client = k8sInit
 
   implicit val prettyPrintObjectMeta: PrettyPrint[ObjectMeta] = new PrettyPrint[ObjectMeta] {
     override def pretty(value: ObjectMeta): String = s"Meta(v${value.resourceVersion}, finalizers=${value.finalizers.getOrElse(Nil)}, deletionTimestamp=${value.deletionTimestamp})"

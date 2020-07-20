@@ -90,7 +90,6 @@ object ResourceMirror extends Logging {
             resourceVersion = Some(listResource.resourceVersion),
             timeoutSeconds = Some(30) // TODO
           ))
-          // TODO: check that watch ignores status updates to avoid loops (does it depend on whether there's a status subresource?)
           val updates = Observable.fromReactivePublisher(source.runWith(Sink.asPublisher(fanout=false)))
           logger.debug(s"ResourceMirror[${rd.spec.names.kind}] in sync, watching for updates")
           new ResourceMirrorImpl[T](listResource.toList, updates)
