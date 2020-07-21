@@ -18,7 +18,7 @@ import skuber.{K8SException, LabelSelector, ListResource, ObjectResource, Pod, R
 import scala.concurrent.{Future, Promise}
 import scala.jdk.CollectionConverters._
 
-class FoperatorDriver[T](implicit s: Scheduler) {
+class FoperatorDriver[T]()(implicit s: Scheduler) {
   var client: FoperatorClient = new FoperatorClient()
   def mirror[O<:ObjectResource]()(implicit rd: ResourceDefinition[O]): ResourceMirror[O] = {
     client.mirror[O]()

@@ -11,7 +11,7 @@ val common = Seq(
     "io.monix" %% "monix" % "3.1.0",
     "org.typelevel" %% "cats-core" % "2.1.0",
     "org.slf4j" % "slf4j-api" % "1.7.9",
-    "org.scalatest" %% "scalatest" % "3.1.0" % Test
+    "org.scalatest" %% "scalatest" % "3.1.0" % Test // TODO pick one, this or minitest
   )
 )
 
@@ -35,8 +35,12 @@ lazy val sample = (project in file("sample"))
     name := "foperator-sample",
     libraryDependencies ++= Seq(
       "ch.qos.logback" % "logback-classic" % "1.2.3",
-      "com.typesafe.akka" %% "akka-slf4j" % "2.5.29"
+      "com.typesafe.akka" %% "akka-slf4j" % "2.5.29",
+      "org.scalacheck" %% "scalacheck" % "1.14.1" % "test",
+      "io.monix" %% "minitest" % "2.8.2" % "test",
+      "io.monix" %% "minitest-laws" % "2.8.2" % "test",
     ),
+    testFrameworks += new TestFramework("minitest.runner.Framework"),
     packMain := Map(
       "simple-mutator" -> "net.gfxmonk.foperator.sample.SimpleWithMutator",
       "advanced-mutator" -> "net.gfxmonk.foperator.sample.AdvancedWithMutator",

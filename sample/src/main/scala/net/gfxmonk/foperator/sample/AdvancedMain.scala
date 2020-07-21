@@ -16,9 +16,7 @@ import scala.util.Try
 object AdvancedMain {
   def main(args: Array[String]): Unit = {
     import Implicits._
-    implicit val scheduler: Scheduler = Scheduler.global
-    implicit val client: KubernetesClient = k8sInit
-    (new AdvancedOperator).main(args)
+    new AdvancedOperator(Scheduler.global, k8sInit).main(args)
   }
 }
 
@@ -26,10 +24,12 @@ object AdvancedOperator {
   val finalizerName = s"AdvancedMain.${Models.greetingSpec.apiGroup}"
 }
 
-class AdvancedOperator(implicit scheduler: Scheduler, client: KubernetesClient) extends TaskApp with Logging {
+class AdvancedOperator(scheduler: Scheduler, client: KubernetesClient) extends TaskApp with Logging {
   import Implicits._
   import Models._
   import AdvancedOperator._
+  implicit val _sched: Scheduler = scheduler
+  implicit val _client: KubernetesClient = client
 
   override def run(args: List[String]): Task[ExitCode] = {
     install() >> ResourceMirror.all[Greeting].use { greetings =>

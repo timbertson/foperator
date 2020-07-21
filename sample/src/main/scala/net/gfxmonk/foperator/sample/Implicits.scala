@@ -5,7 +5,7 @@ import akka.stream.ActorMaterializer
 import net.gfxmonk.foperator.CustomResourceUpdate
 import net.gfxmonk.foperator.Update.{Metadata, Unchanged, Spec, Status}
 import net.gfxmonk.foperator.sample.Models.{GreetingSpec, GreetingStatus, PersonSpec, PersonStatus}
-import net.gfxmonk.foperator.sample.MutatorMain.Action
+import net.gfxmonk.foperator.sample.Mutator.Action
 import skuber.{CustomResource, ObjectMeta, ResourceDefinition, k8sInit}
 
 object Implicits {

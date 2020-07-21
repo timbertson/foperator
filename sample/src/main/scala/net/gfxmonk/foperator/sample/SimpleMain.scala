@@ -13,9 +13,7 @@ import skuber.k8sInit
 object SimpleMain {
   def main(args: Array[String]): Unit = {
     import Implicits._
-    implicit val scheduler: Scheduler = Scheduler.global
-    implicit val client: KubernetesClient = k8sInit
-    (new SimpleOperator).main(args)
+    new SimpleOperator(Scheduler.global, k8sInit).main(args)
   }
 }
 
@@ -24,9 +22,11 @@ object SimpleOperator {
     GreetingStatus(s"hello, ${greeting.spec.name.getOrElse("UNKNOWN")}", people = Nil)
 }
 
-class SimpleOperator(implicit scheduler: Scheduler, client: KubernetesClient) extends TaskApp {
+class SimpleOperator(scheduler: Scheduler, client: KubernetesClient) extends TaskApp {
   import Implicits._
   import Models._
+  implicit val _sched: Scheduler = scheduler
+  implicit val _client: KubernetesClient = client
 
   def install() = {
     Operations.write[CustomResourceDefinition]((res, meta) => res.copy(metadata=meta))(greetingCrd).void
