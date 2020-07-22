@@ -34,6 +34,7 @@ class SimpleOperator(scheduler: Scheduler, client: KubernetesClient) extends Tas
 
   def runWith(mirror: ResourceMirror[Greeting]): Task[Unit] = {
     val operator = Operator[Greeting](
+      refreshInterval = None,
       reconciler = Reconciler.updater { greeting =>
         // Always return the expected status, Reconciler.customResourceUpdater
         // will make this a no-op without any API calls if it is unchanged.

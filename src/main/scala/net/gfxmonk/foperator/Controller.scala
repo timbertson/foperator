@@ -10,7 +10,7 @@ import scala.concurrent.duration._
 case class Operator[T](
                         finalizer: Finalizer[T] = Finalizer.empty[T],
                         reconciler: Reconciler[T] = Reconciler.empty,
-                        refreshInterval: FiniteDuration = 300.seconds,
+                        refreshInterval: Option[FiniteDuration] = Some(5.minutes),
                         concurrency: Int = 1
                       )
 

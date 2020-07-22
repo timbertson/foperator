@@ -1,18 +1,36 @@
 package net.gfxmonk.foperator.sample
 
+import cats.data.Validated
 import minitest.laws.Checkers
 import monix.eval.Task
 import monix.execution.schedulers.{CanBlock, TestScheduler}
 import monix.execution.{ExecutionModel, Scheduler}
 import net.gfxmonk.foperator.internal.Logging
+import net.gfxmonk.foperator.sample.Implicits._
 import net.gfxmonk.foperator.sample.Models._
 import net.gfxmonk.foperator.testkit.FoperatorDriver
+import org.scalacheck.Shrink
 import org.scalatest.FunSpec
 
 import scala.util.Random
+import scala.concurrent.duration._
+
 
 class MyLawsTest extends FunSpec with Checkers with Logging {
+
+  def assertValid(validator: StateValidator) = {
+    validator.validate match {
+      case Validated.Valid(_) => Task.unit
+      case Validated.Invalid(errors) => {
+        validator.dumpState >> Task.raiseError(
+          new AssertionError("Inconsistencies found:\n" + errors.toList.mkString("\n"))
+        )
+      }
+    }
+  }
+
   it("Reaches a consistent state after every mutation") {
+    implicit val disableShrink: Shrink[Int] = Shrink(_ => Stream.empty)
     check1 { (seed: Int) =>
       val testScheduler = TestScheduler(ExecutionModel.SynchronousExecution)
       val realScheduler = Scheduler.global
@@ -31,12 +49,13 @@ class MyLawsTest extends FunSpec with Checkers with Logging {
         } else {
           (for {
             action <- mutator.nextAction(rand, _ => true)
-            _ <- Task(logger.info(s"Running #${limit} ${action}"))
+            _ <- Task(logger.info(s"Running step #${limit} (seed: $seed) ${action}"))
             _ <- action.run
             _ <- Task(logger.info(s"Ticking..."))
-            _ = testScheduler.tick()
+            _ = testScheduler.tick(10.seconds)
             _ <- Task(logger.info(s"Checking consistency..."))
-            result <- mutator.checkConsistency(verbose = false)
+            validator <- mutator.stateValidator
+            _ <- assertValid(validator)
           } yield ()).flatMap(_ => loop(limit-1))
         }
       }

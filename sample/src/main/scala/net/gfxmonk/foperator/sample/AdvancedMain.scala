@@ -98,6 +98,7 @@ class AdvancedOperator(scheduler: Scheduler, client: KubernetesClient) extends T
     peopleMirror: ResourceMirror[Person]
   ): Controller[Greeting] = {
     val operator = Operator[Greeting](
+      refreshInterval = None,
       reconciler = Reconciler.updaterWith(greetingUpdater(peopleMirror)) { greeting =>
         val newStatus = greeting.spec.surname match {
 

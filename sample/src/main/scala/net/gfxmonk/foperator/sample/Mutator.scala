@@ -3,6 +3,7 @@ package net.gfxmonk.foperator.sample
 import java.util.concurrent.TimeUnit
 
 import cats.Eq
+import cats.data.{NonEmptyList, Validated, ValidatedNec, ValidatedNel}
 import cats.effect.ExitCode
 import cats.implicits._
 import monix.eval.{Task, TaskApp}
@@ -242,14 +243,6 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
     activePairs.toMap
   }
 
-  def checkConsistency(verbose: Boolean) = {
-    for {
-      peopleMap <- people.all.flatMap(collectLive(_))
-      greetingsMap <- greetings.all.flatMap(collectLive(_))
-      _ <- consistencyReport(verbose, peopleMap, greetingsMap)
-    } yield ()
-  }
-
   def nextAction(random: Random, filter: Action => Boolean): Task[Action] = {
     def pick(root: Decision, limit: Int): Task[Action] = {
       if (limit <= 0) {
@@ -273,44 +266,12 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
     } yield action
   }
 
-  private def consistencyReport(verbose: Boolean, people: Map[String, Person], greetings: Map[String, Greeting])(implicit ppGreeting: PrettyPrint[Greeting], ppPerson: PrettyPrint[Person]) = Task {
-    greetings.values.foreach { greeting =>
-      val context = ListBuffer[String]()
-      val errors = ListBuffer[String]()
-      context.append(s"Checking: ${ppGreeting.pretty(greeting)}")
-      greeting.spec.surname match {
-        case None => {
-          val expected = SimpleOperator.expectedStatus(greeting)
-          if(!greeting.status.exists(_ === expected)) {
-            errors.append(s"Greeting state inconsistent! Expected Some(${expected}), but was ${greeting.status}")
-          }
-        }
-        case Some(surname) => {
-          val expectedPeople = people.values.filter(_.spec.surname === surname)
-          val actualNames = greeting.status.map(_.people).getOrElse(Nil).toSet
-          val expectedNames = expectedPeople.map(_.name).toSet
-          (actualNames ++ expectedNames).toList.sorted.foreach { name =>
-            val pp = implicitly[PrettyPrint[Option[Person]]]
-            context.append(s" - person: ${pp.pretty(people.get(name))}")
-          }
-          if (expectedNames =!= actualNames) {
-            errors.append(s"Greeting state inconsistent! Expected ${expectedNames.toList.sorted}, got ${actualNames.toList.sorted}")
-          }
-          expectedPeople.foreach { person =>
-            if(!person.metadata.finalizers.getOrElse(Nil).contains_(AdvancedOperator.finalizerName)) {
-              errors.append(s"Person is missing finalizer: ${ppPerson.pretty(person)}")
-            }
-          }
-        }
-      }
-      if (errors.nonEmpty) {
-        context.foreach(logger.info)
-        errors.foreach(logger.error)
-      } else if (verbose) {
-        context.foreach(logger.info)
-      }
-    }
-    logger.info(s"Checked ${greetings.size} greetings and ${people.size} people")
+  def stateValidator = {
+    for {
+      // TODO check finalizing folks, too
+      peopleMap <- people.all.flatMap(collectLive(_))
+      greetingsMap <- greetings.all.flatMap(collectLive(_))
+    } yield new StateValidator(peopleMap, greetingsMap)
   }
 
   def runRepl(): Task[Unit] = {
@@ -319,7 +280,10 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
         logger.info(s"Running: ${prettyPrintAction.pretty(action)}")
         action.run.materialize
       }.flatMap {
-        case Success(_) => Task.sleep(FiniteDuration(200, TimeUnit.MILLISECONDS)) >> checkConsistency(false)
+        case Success(_) => {
+          Task.sleep(FiniteDuration(200, TimeUnit.MILLISECONDS)) >>
+            stateValidator.flatMap(_.report(verbose = false))
+        }
         case Failure(err) => Task(logger.warn(s"^^^ Failed: $err"))
       }
     }
@@ -351,7 +315,7 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
       case "m" => doSomething(_.isInstanceOf[Modify[_,_]])
       case "c" => doSomething(_.isInstanceOf[Create[_,_]])
       case "" => doSomething(_ => true)
-      case " " => checkConsistency(true)
+      case " " => stateValidator.flatMap(_.report(verbose = true))
       case other => {
         Task(logger.error(s"Unknown command: ${other}, try c/m/d"))
       }
