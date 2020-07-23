@@ -27,7 +27,7 @@ object ResourceLoop {
     def zero = ErrorCount(0)
   }
 
-  def manager[T<:AnyRef](refreshInterval: FiniteDuration)(implicit scheduler: Scheduler): Manager[ResourceLoop] =
+  def manager[T<:AnyRef](refreshInterval: Option[FiniteDuration])(implicit scheduler: Scheduler): Manager[ResourceLoop] =
     new Manager[ResourceLoop] {
       override def create[T](currentState: Task[Option[ResourceState[T]]], reconciler: Reconciler[ResourceState[T]], permitScope: PermitScope): ResourceLoop[T] = {
         def backoffTime(errorCount: ErrorCount) = Math.pow(1.2, errorCount.value.toDouble).seconds
@@ -42,7 +42,7 @@ object ResourceLoop {
 class ResourceLoop[T](
                        currentState: Task[Option[ResourceState[T]]],
                        reconciler: Reconciler[ResourceState[T]],
-                       refreshInterval: FiniteDuration,
+                       refreshInterval: Option[FiniteDuration],
                        permitScope: PermitScope,
                        backoffTime: ErrorCount => FiniteDuration
                      )(implicit scheduler: Scheduler) extends Cancelable with Logging {
@@ -83,26 +83,27 @@ class ResourceLoop[T](
     result.flatMap {
       case Success(result) => {
         val delay = result match {
-          case ReconcileResult.RetryAfter(delay) => delay
+          case ReconcileResult.RetryAfter(delay) => Some(delay)
           case _ => refreshInterval
         }
-        logger.info(s"$logId Reconcile completed successfully, retrying in ${delay.toSeconds}s")
+        logger.info(s"$logId Reconcile completed successfully, retrying in ${delay.map(_.toSeconds)}s")
         scheduleReconcile(ErrorCount.zero, delay)
       }
 
       case Failure(error) => {
         val nextCount = errorCount.increment
-        val delay = backoffTime(nextCount).min(refreshInterval)
+        val errorDelay = backoffTime(nextCount)
+        val delay = refreshInterval.fold(errorDelay)(errorDelay.min)
         logger.warn(s"$logId Reconcile failed: ${error}, retrying in ${delay.toSeconds}s")
-        scheduleReconcile(nextCount, delay)
+        scheduleReconcile(nextCount, Some(delay))
       }
     }
   }
 
-  private def scheduleReconcile(errorCount: ErrorCount, delay: FiniteDuration): Task[Unit] = {
+  private def scheduleReconcile(errorCount: ErrorCount, delay: Option[FiniteDuration]): Task[Unit] = {
     Task.race(
       Task.fromFuture(modified.future),
-      Task.pure(errorCount).delayExecution(delay)
+      delay.fold(Task.never[ErrorCount])(delay => Task.pure(errorCount).delayExecution(delay))
     ).map {
       case Right(errorCount) => errorCount
       case Left(()) => ErrorCount.zero

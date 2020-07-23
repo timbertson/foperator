@@ -3,7 +3,7 @@ package net.gfxmonk.foperator.sample
 import cats.data.Validated
 import minitest.laws.Checkers
 import monix.eval.Task
-import monix.execution.schedulers.{CanBlock, TestScheduler}
+import monix.execution.schedulers.{CanBlock, TestScheduler, TrampolineScheduler}
 import monix.execution.{ExecutionModel, Scheduler}
 import net.gfxmonk.foperator.internal.Logging
 import net.gfxmonk.foperator.sample.Implicits._
@@ -16,7 +16,8 @@ import scala.util.Random
 import scala.concurrent.duration._
 
 
-class MyLawsTest extends FunSpec with Checkers with Logging {
+// TODO PropSpec or something more direct?
+class AdvancedTest extends FunSpec with Checkers with Logging {
 
   def assertValid(validator: StateValidator) = {
     validator.validate match {
@@ -33,7 +34,7 @@ class MyLawsTest extends FunSpec with Checkers with Logging {
     implicit val disableShrink: Shrink[Int] = Shrink(_ => Stream.empty)
     check1 { (seed: Int) =>
       val testScheduler = TestScheduler(ExecutionModel.SynchronousExecution)
-      val realScheduler = Scheduler.global
+      val realScheduler = TrampolineScheduler(Scheduler.global, ExecutionModel.SynchronousExecution)
       val driver = new FoperatorDriver()(realScheduler)
       implicit val client = driver.client
 

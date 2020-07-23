@@ -47,7 +47,7 @@ class AdvancedOperator(scheduler: Scheduler, client: KubernetesClient) extends T
   }
 
   def install() = {
-    (new SimpleOperator).install() >>
+    (new SimpleOperator(scheduler, client)).install() >>
       Operations.write[CustomResourceDefinition]((res, meta) => res.copy(metadata = meta))(personCrd).void
   }
 

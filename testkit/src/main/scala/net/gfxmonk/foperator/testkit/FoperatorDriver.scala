@@ -10,13 +10,12 @@ import monix.reactive.MulticastStrategy
 import monix.reactive.subjects.ConcurrentSubject
 import net.gfxmonk.foperator.{Id, ResourceMirror, ResourceMirrorImpl}
 import play.api.libs.json.{Format, JsArray, Writes}
+import skuber.api.client
 import skuber.api.client.{EventType, KubernetesClient, LoggingConfig, WatchEvent}
 import skuber.api.patch.Patch
-import skuber.api.{client, patch}
-import skuber.{K8SException, LabelSelector, ListResource, ObjectResource, Pod, ResourceDefinition, Scale}
+import skuber.{K8SException, LabelSelector, ObjectResource, Pod, ResourceDefinition, Scale}
 
 import scala.concurrent.{Future, Promise}
-import scala.jdk.CollectionConverters._
 
 class FoperatorDriver[T]()(implicit s: Scheduler) {
   var client: FoperatorClient = new FoperatorClient()
@@ -81,14 +80,20 @@ class FoperatorClient()(implicit s: Scheduler) extends KubernetesClient {
   override def getInNamespace[O <: skuber.ObjectResource](name: String, namespace: String)(implicit fmt: Format[O], rd: ResourceDefinition[O], lc: client.LoggingContext): Future[O] =
     requireOpt(getId(Id.createUnsafe[O](namespace, name)))
 
+  private def bumpResourceVersion[O <: skuber.ObjectResource](obj: O)(implicit fmt: Format[O], rd: ResourceDefinition[O]): O = {
+    val json = fmt.writes(obj)
+    println(s"Serialized: $obj")
+    fmt.reads(json).get
+  }
+
   override def create[O <: skuber.ObjectResource](obj: O)(implicit fmt: Format[O], rd: ResourceDefinition[O], lc: client.LoggingContext): Future[O] = {
+    val updated = bumpResourceVersion(obj)
     state.synchronized {
-      Option(resourceSet(rd).putIfAbsent(Id.of(obj), obj)) match {
-        case Some(existing) => conflict
-        // TODO should set ResourceVersion
+      Option(resourceSet(rd).putIfAbsent(Id.of(updated), updated)) match {
+        case Some(_) => conflict
         case None => {
           subject(rd)
-            .onNext(WatchEvent(EventType.ADDED, obj))
+            .onNext(WatchEvent(EventType.ADDED, updated))
             .map(_ => obj) // NOTE ignores Ack.Stop
         }
       }
@@ -100,11 +105,11 @@ class FoperatorClient()(implicit s: Scheduler) extends KubernetesClient {
     val id = Id.of(obj)
     Option(res.get(id)) match {
       case Some(existing) => if (existing.resourceVersion === obj.metadata.resourceVersion) {
-        // TODO increment version
-        res.put(id, obj)
+        val updated = bumpResourceVersion(obj)
+        res.put(id, updated)
         subject(rd)
-          .onNext(WatchEvent(EventType.MODIFIED, obj))
-          .map(_ => obj) // NOTE ignores Ack.Stop
+          .onNext(WatchEvent(EventType.MODIFIED, updated))
+          .map(_ => updated) // NOTE ignores Ack.Stop
       } else conflict
       case None => notFound
     }

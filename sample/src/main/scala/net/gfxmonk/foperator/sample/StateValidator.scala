@@ -35,7 +35,7 @@ class StateValidator(people: Map[String, Person], greetings: Map[String, Greetin
     val hasFinalizer = person.metadata.finalizers.getOrElse(Nil).contains_(AdvancedOperator.finalizerName)
     if (needsFinalizer && !hasFinalizer) {
       Validated.invalidNel(s"Person needs finalizer but none is set: ${person}")
-    } else if (!needsFinalizer && !hasFinalizer) {
+    } else if (!needsFinalizer && hasFinalizer) {
       Validated.invalidNel(s"Person has unnecessary finalizer: ${person}")
     } else {
       Validated.validNel(())

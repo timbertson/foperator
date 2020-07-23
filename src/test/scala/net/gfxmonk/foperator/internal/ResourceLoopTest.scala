@@ -57,7 +57,7 @@ class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec {
       backoffTime
     }
 
-    val loop = new ResourceLoop(Task.pure(Some(ResourceState.Active(initial))), reconciler, refreshInterval, permitScope, calculateBackoff)
+    val loop = new ResourceLoop(Task.pure(Some(ResourceState.Active(initial))), reconciler, Some(refreshInterval), permitScope, calculateBackoff)
   }
 
   def defaultReconciler[T](iteration: Int, item: ResourceState[T]): Task[ReconcileResult] = Task.pure(ReconcileResult.Ok)
