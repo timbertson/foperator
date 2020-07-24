@@ -4,26 +4,28 @@ import cats.data.{NonEmptyList, Validated, ValidatedNel}
 import cats.implicits._
 import monix.eval.Task
 import net.gfxmonk.foperator.internal.Logging
-import Models._
-import Implicits._
-import net.gfxmonk.foperator.Id
+import net.gfxmonk.foperator.sample.Implicits._
+import net.gfxmonk.foperator.sample.Models._
+import net.gfxmonk.foperator.{Id, ResourceState}
 
-class StateValidator(people: Map[String, Person], greetings: Map[String, Greeting]) extends Logging {
+class StateValidator(people: Map[String, ResourceState[Person]], greetings: Map[String, ResourceState[Greeting]]) extends Logging {
   case class ValidationError(context: List[String], errors: List[String])
 
-  def dumpState(implicit ppGreeting: PrettyPrint[Greeting], ppPerson: PrettyPrint[Person]) = Task {
-    people.values.toList.sortBy(_.name).foreach { person =>
-      logger.info(s"Person: ${ppPerson.pretty(person)}")
+  def dumpState(implicit ppGreeting: PrettyPrint[ResourceState[Greeting]], ppPerson: PrettyPrint[ResourceState[Person]]) = Task {
+    people.values.toList.sortBy(_.raw.name).foreach { person =>
+      logger.info(ppPerson.pretty(person))
     }
 
-    greetings.values.toList.sortBy(_.name).foreach { greeting =>
-      logger.info(s"Greeting: ${ppGreeting.pretty(greeting)}")
-      val names = greeting.status.map(_.people).getOrElse(Nil)
-      NonEmptyList.fromList(names.sorted) match {
-        case None => logger.info(" - (no people)")
-        case Some(names) => names.toList.foreach { name =>
-          val pp = implicitly[PrettyPrint[Option[Person]]]
-          logger.info(s" - person: ${pp.pretty(people.get(name))}")
+    greetings.values.toList.sortBy(_.raw.name).foreach { greeting =>
+      logger.info(ppGreeting.pretty(greeting))
+      ResourceState.active(greeting).foreach { greeting =>
+        val names = greeting.status.map(_.people).getOrElse(Nil)
+        NonEmptyList.fromList(names.sorted) match {
+          case None => logger.info(" - (no people)")
+          case Some(names) => names.toList.foreach { name =>
+            val pp = implicitly[PrettyPrint[Option[ResourceState[Person]]]]
+            logger.info(s" - person: ${pp.pretty(people.get(name))}")
+          }
         }
       }
     }
@@ -31,7 +33,8 @@ class StateValidator(people: Map[String, Person], greetings: Map[String, Greetin
   }
 
   private def validatePerson(person: Person) = {
-    val needsFinalizer = greetings.values.exists(_.status.exists(_.people.contains_(person.name)))
+    val activeGreetings = greetings.values.toList.mapFilter(ResourceState.active)
+    val needsFinalizer = activeGreetings.exists(_.status.exists(_.people.contains_(person.name)))
     val hasFinalizer = person.metadata.finalizers.getOrElse(Nil).contains_(AdvancedOperator.finalizerName)
     if (needsFinalizer && !hasFinalizer) {
       Validated.invalidNel(s"Person needs finalizer but none is set: ${person}")
@@ -44,6 +47,7 @@ class StateValidator(people: Map[String, Person], greetings: Map[String, Greetin
 
   private def validateGreeting(greeting: Greeting) = {
     def require(test: Boolean, msg: => String): ValidatedNel[String, Unit] = Validated.condNel(test, (), msg)
+    val activePeople = people.values.toList.mapFilter(ResourceState.active)
 
     greeting.spec.surname match {
       case None => {
@@ -54,7 +58,7 @@ class StateValidator(people: Map[String, Person], greetings: Map[String, Greetin
         )
       }
       case Some(surname) => {
-        val expectedPeople = people.values.filter(_.spec.surname === surname)
+        val expectedPeople = activePeople.filter(_.spec.surname === surname)
         val actualNames = greeting.status.map(_.people).getOrElse(Nil).toSet
         val expectedNames = expectedPeople.map(_.name).toSet
         require(expectedNames === actualNames,
@@ -63,11 +67,18 @@ class StateValidator(people: Map[String, Person], greetings: Map[String, Greetin
     }
   }
 
+  private def validateResourceState[T,R](obj: ResourceState[T], ifActive: T => ValidatedNel[String,R])(implicit pp: PrettyPrint[T]): ValidatedNel[String,R] = {
+    obj match {
+      case ResourceState.Active(value) => ifActive(value)
+      case ResourceState.SoftDeleted(value) => Validated.invalidNel(s"Resource is awaiting deletion: ${pp.pretty(value)}")
+    }
+  }
+
   def validate = {
     (greetings.values.toList.map { greeting =>
-      validateGreeting(greeting)
+      validateResourceState(greeting, validateGreeting)
     } ++ people.values.toList.map { person =>
-      validatePerson(person)
+      validateResourceState(person, validatePerson)
     }).sequence_
   }
 

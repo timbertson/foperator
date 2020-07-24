@@ -2,8 +2,8 @@ package net.gfxmonk.foperator.sample
 
 import akka.actor.ActorSystem
 import akka.stream.ActorMaterializer
-import net.gfxmonk.foperator.CustomResourceUpdate
-import net.gfxmonk.foperator.Update.{Metadata, Unchanged, Spec, Status}
+import net.gfxmonk.foperator.{CustomResourceUpdate, ResourceState}
+import net.gfxmonk.foperator.Update.{Metadata, Spec, Status, Unchanged}
 import net.gfxmonk.foperator.sample.Models.{GreetingSpec, GreetingStatus, PersonSpec, PersonStatus}
 import net.gfxmonk.foperator.sample.Mutator.Action
 import skuber.{CustomResource, ObjectMeta, ResourceDefinition, k8sInit}
@@ -29,6 +29,13 @@ object Implicits {
 
   implicit def prettyOption[T](implicit pp: PrettyPrint[T]): PrettyPrint[Option[T]] = new PrettyPrint[Option[T]] {
     override def pretty(value: Option[T]): String = value.map(value => s"Some(${pp.pretty(value)})").getOrElse("None")
+  }
+
+  implicit def prettyResourceState[T](implicit pp: PrettyPrint[T]): PrettyPrint[ResourceState[T]] = new PrettyPrint[ResourceState[T]] {
+    override def pretty(value: ResourceState[T]): String = value match {
+      case ResourceState.SoftDeleted(value) => s"[SOFT_DELETE] ${pp.pretty(value)}"
+      case ResourceState.Active(value) => pp.pretty(value)
+    }
   }
 
   implicit def prettyPrintUpdate[Sp,St](implicit ppSp: PrettyPrint[Sp], ppSt: PrettyPrint[St]): PrettyPrint[CustomResourceUpdate[Sp,St]] = new PrettyPrint[CustomResourceUpdate[Sp, St]] {

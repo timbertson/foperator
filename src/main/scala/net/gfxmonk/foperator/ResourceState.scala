@@ -5,10 +5,16 @@ import java.time.{Clock, ZonedDateTime}
 import cats.implicits._
 import skuber.{ObjectMeta, ObjectResource}
 
-sealed trait ResourceState[T]
+sealed trait ResourceState[T] {
+  def raw: T
+}
 object ResourceState {
-  case class SoftDeleted[T](value: T) extends ResourceState[T]
-  case class Active[T](value: T) extends ResourceState[T]
+  case class SoftDeleted[T](value: T) extends ResourceState[T] {
+    override def raw: T = value
+  }
+  case class Active[T](value: T) extends ResourceState[T] {
+    override def raw: T = value
+  }
 
   def of[T<:ObjectResource](value: T): ResourceState[T] = {
     if(value.metadata.deletionTimestamp.isDefined) {

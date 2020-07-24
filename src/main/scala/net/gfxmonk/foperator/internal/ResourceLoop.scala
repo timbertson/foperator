@@ -54,39 +54,54 @@ class ResourceLoop[T](
   import ResourceLoop._
   private val logId = s"[${reconciler.hashCode}-${currentState.hashCode}]"
   @volatile private var modified = Promise[Unit]()
+  private val resetPromise = Task {
+    // reset `modified` right before reading the current state. Updates occur in
+    // the opposite order (state is changed then promise is fulfilled), which
+    // ensures we never miss a change (but we could double-process a concurrent change)
+    modified = Promise[Unit]()
+    logger.trace(s"$logId reset `modified` to fresh promise")
+  }
+
   private val cancelable = reconcileNow(ErrorCount.zero).runToFuture
+
+  // TODO can something above us fail in the unlikely event this future dies?
+  cancelable.onComplete {
+    case Success(()) => ()
+    case Failure(error) => {
+      logger.error(s"$logId fatal error: $error")
+    }
+  }
 
   override def cancel(): Unit = cancelable.cancel()
 
   def update: Task[Unit] = Task {
-    logger.trace(s"$logId needs update...")
-    val _: Boolean = modified.trySuccess(())
+    logger.trace(s"$logId marking as modified")
+    if (!modified.trySuccess(())) {
+      logger.trace(s"$logId (an update is already pending)")
+    }
   }
 
   private def reconcileNow(errorCount: ErrorCount): Task[Unit] = {
-    val result = permitScope.withPermit {
-      // reset `modified` right before reading the current state. Updates occur in
-      // the opposite order (state is changed then promise is fulfilled), which
-      // ensures we never miss a change (but we could double-process a concurrent change)
-      modified = Promise[Unit]()
-      // TODO return Option[Task], then we can log it differently
-      currentState.flatMap {
-        case None => Task.pure(Success(ReconcileResult.Ok))
-        case Some(obj) => {
-          logger.trace(s"$logId performing reconcile")
-          reconciler.reconcile(obj).materialize
-        }
+    val runReconcile = resetPromise >> currentState.flatMap {
+      case None => {
+        logger.trace(s"$logId no longer present, skipping reconcile")
+        Task.pure(Success(ReconcileResult.Ok))
+      }
+      case Some(obj) => {
+        logger.trace(s"$logId performing reconcile")
+        reconciler.reconcile(obj).materialize
       }
     }
 
     Task(logger.trace(s"$logId Acquiring permit")) >>
-    result.flatMap {
+    permitScope.withPermit(runReconcile).flatMap {
       case Success(result) => {
         val delay = result match {
           case ReconcileResult.RetryAfter(delay) => Some(delay)
           case _ => refreshInterval
         }
-        logger.info(s"$logId Reconcile completed successfully, retrying in ${delay.map(_.toSeconds)}s")
+        val retryMsg = delay.fold("")(delay => s", retrying in ${delay}s")
+        logger.info(s"$logId Reconcile completed successfully${retryMsg}")
         scheduleReconcile(ErrorCount.zero, delay)
       }
 
@@ -94,7 +109,7 @@ class ResourceLoop[T](
         val nextCount = errorCount.increment
         val errorDelay = backoffTime(nextCount)
         val delay = refreshInterval.fold(errorDelay)(errorDelay.min)
-        logger.warn(s"$logId Reconcile failed: ${error}, retrying in ${delay.toSeconds}s")
+        logger.warn(s"$logId Reconcile failed: ${error} (attempt #${nextCount.value}), retrying in ${delay.toSeconds}s")
         scheduleReconcile(nextCount, Some(delay))
       }
     }

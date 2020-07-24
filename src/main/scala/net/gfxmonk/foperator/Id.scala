@@ -1,7 +1,5 @@
 package net.gfxmonk.foperator
 
-import java.util.Objects
-
 import cats.Eq
 import skuber.ObjectResource
 
@@ -9,6 +7,8 @@ import scala.util.{Failure, Success, Try}
 
 // Not a case class because we don't want people to create it outside the explicit API
 class Id[T] private(val namespace: String, val name: String) {
+  override def toString(): String = s"$namespace/$name"
+
   override def hashCode(): Int = name.hashCode()
 
   override def equals(obj: Any): Boolean = {

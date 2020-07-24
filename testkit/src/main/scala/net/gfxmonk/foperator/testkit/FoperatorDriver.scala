@@ -1,5 +1,6 @@
 package net.gfxmonk.foperator.testkit
 
+import java.time.{Clock, ZonedDateTime}
 import java.util.concurrent.ConcurrentHashMap
 
 import akka.stream.scaladsl.{Sink, Source}
@@ -13,12 +14,13 @@ import play.api.libs.json.{Format, JsArray, Writes}
 import skuber.api.client
 import skuber.api.client.{EventType, KubernetesClient, LoggingConfig, WatchEvent}
 import skuber.api.patch.Patch
-import skuber.{K8SException, LabelSelector, ObjectResource, Pod, ResourceDefinition, Scale}
+import skuber.{CustomResource, K8SException, LabelSelector, ObjectResource, Pod, ResourceDefinition, Scale}
 
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.{ExecutionContext, Future, Promise}
 
-class FoperatorDriver[T]()(implicit s: Scheduler) {
-  var client: FoperatorClient = new FoperatorClient()
+class FoperatorDriver[T](userScheduler: Scheduler) {
+  val client: FoperatorClient = new FoperatorClient(userScheduler)
+
   def mirror[O<:ObjectResource]()(implicit rd: ResourceDefinition[O]): ResourceMirror[O] = {
     client.mirror[O]()
   }
@@ -29,7 +31,7 @@ object FoperatorClient {
   type ResourceSet[T] = ConcurrentHashMap[Id[T], T]
 }
 
-class FoperatorClient()(implicit s: Scheduler) extends KubernetesClient {
+class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient {
   import FoperatorClient._
   private val state: ResourceMap[ResourceSet[_]] = new ConcurrentHashMap[ResourceDefinition[_], ResourceSet[_]]()
   private val subjects: ResourceMap[ConcurrentSubject[_,_]] = new ConcurrentHashMap[ResourceDefinition[_], ConcurrentSubject[_,_]]()
@@ -41,6 +43,7 @@ class FoperatorClient()(implicit s: Scheduler) extends KubernetesClient {
   override val namespaceName: String = "default"
 
   private [testkit] def mirror[O<:ObjectResource]()(implicit rd: ResourceDefinition[O]): ResourceMirror[O] = {
+    implicit val s: Scheduler = userScheduler
     new ResourceMirrorImpl[O](Nil, subject(rd))
   }
 
@@ -51,11 +54,15 @@ class FoperatorClient()(implicit s: Scheduler) extends KubernetesClient {
   }
 
   private def subject[O<: ObjectResource](rd: ResourceDefinition[O]): ConcurrentSubject[WatchEvent[O],WatchEvent[O]] = {
-    subjects.putIfAbsent(rd, ConcurrentSubject(MulticastStrategy.publish))
+    subjects.putIfAbsent(rd, ConcurrentSubject(MulticastStrategy.publish)(userScheduler))
     (subjects.get(rd): ConcurrentSubject[_,_]).asInstanceOf[ConcurrentSubject[WatchEvent[O],WatchEvent[O]]]
   }
 
-  private def getId[O <: skuber.ObjectResource](id: Id[O])(implicit fmt: Format[O], rd: ResourceDefinition[O], lc: client.LoggingContext): Option[O] = {
+  private def emitAndForget[O<: ObjectResource](event: WatchEvent[O])(implicit rd: ResourceDefinition[O]): Unit = {
+    subject(rd).onNext(event) // NOTE ignores Ack.Stop
+  }
+
+  private def getId[O <: skuber.ObjectResource](id: Id[O])(implicit rd: ResourceDefinition[O]): Option[O] = {
     Option(resourceSet(rd).get(id))
   }
 
@@ -72,7 +79,7 @@ class FoperatorClient()(implicit s: Scheduler) extends KubernetesClient {
   }
 
   override def get[O <: skuber.ObjectResource](name: String)(implicit fmt: Format[O], rd: ResourceDefinition[O], lc: client.LoggingContext): Future[O] =
-    getOption(name).flatMap(requireOpt)
+    getOption(name).flatMap(requireOpt)(ExecutionContext.parasitic)
 
   override def getOption[O <: skuber.ObjectResource](name: String)(implicit fmt: Format[O], rd: ResourceDefinition[O], lc: client.LoggingContext): Future[Option[O]] =
     Future.successful(getId(Id.createUnsafe[O]("default", name)))
@@ -80,10 +87,67 @@ class FoperatorClient()(implicit s: Scheduler) extends KubernetesClient {
   override def getInNamespace[O <: skuber.ObjectResource](name: String, namespace: String)(implicit fmt: Format[O], rd: ResourceDefinition[O], lc: client.LoggingContext): Future[O] =
     requireOpt(getId(Id.createUnsafe[O](namespace, name)))
 
-  private def bumpResourceVersion[O <: skuber.ObjectResource](obj: O)(implicit fmt: Format[O], rd: ResourceDefinition[O]): O = {
-    val json = fmt.writes(obj)
-    println(s"Serialized: $obj")
-    fmt.reads(json).get
+  private def bumpResourceVersion[O <: skuber.ObjectResource](obj: O): O = {
+//    val json = fmt.writes(obj)
+////    println(s"Serialized: $json")
+//
+//    import play.api.libs.json._
+//    val munge: Reads[JsObject] = new Reads[JsObject] {
+//      override def reads(json: JsValue): JsResult[JsObject] = {
+//        // This is probably a terrible way to do it but oh well
+//        for {
+//          js <- json.validate[JsObject]
+//          meta <- (js \ "metadata").validate[JsObject]
+//          version <- (js \ "resourceVersion").getOrElse(JsString("0")).validate[JsString]
+//          newVersion = JsString(s"${Integer.parseInt(version.value)+1}")
+//          newMeta = meta + ("resourceVersion" -> newVersion)
+//        } yield (js + ("metadata" -> newMeta))
+//      }
+//    }
+//    val updated = json.transform(munge)
+////    println(s"Updated: ${updated}")
+//    fmt.reads(updated.get).get
+
+    val cr = obj.asInstanceOf[CustomResource[_,_]]
+    val meta = obj.metadata
+    val version = if (meta.resourceVersion == "") 0 else Integer.parseInt(meta.resourceVersion)
+    val namespace = if (meta.namespace == "") "default" else meta.namespace
+    cr.withMetadata(meta.copy(
+      resourceVersion = (version + 1).toString,
+      namespace = namespace
+    )).asInstanceOf[O]
+  }
+
+  private def softDelete[O <: skuber.ObjectResource](obj: O): O = {
+    val cr = obj.asInstanceOf[CustomResource[_,_]]
+    val meta = obj.metadata
+    cr.withMetadata(
+      meta.copy(deletionTimestamp = Some(meta.deletionTimestamp.getOrElse(ZonedDateTime.now(Clock.systemUTC()))))
+    ).asInstanceOf[O]
+//
+//    val json = fmt.writes(obj)
+//    import play.api.libs.json._
+//    val munge: Reads[JsObject] = new Reads[JsObject] {
+//      override def reads(json: JsValue): JsResult[JsObject] = {
+//        // This is probably a terrible way to do it but oh well
+//        for {
+//          js <- json.validate[JsObject]
+//          meta <- (js \ "metadata").validate[JsObject]
+//          deletion <- (js \ "deletionTimestamp").getOrElse(JsString("2020-01-01T00:00:00Z")).validate[JsString]
+//          newMeta = meta + ("deletionTimestamp" -> deletion)
+//        } yield (js + ("metadata" -> newMeta))
+//      }
+//    }
+//    json.transform(munge).flatMap(fmt.reads).get
+  }
+
+  private def startDeletion[O <: skuber.ObjectResource](obj: O): Option[O] = {
+    if (obj.metadata.finalizers.exists(_.nonEmpty)) {
+      // soft delete
+      Some(softDelete(obj))
+    } else {
+      None
+    }
   }
 
   override def create[O <: skuber.ObjectResource](obj: O)(implicit fmt: Format[O], rd: ResourceDefinition[O], lc: client.LoggingContext): Future[O] = {
@@ -92,24 +156,30 @@ class FoperatorClient()(implicit s: Scheduler) extends KubernetesClient {
       Option(resourceSet(rd).putIfAbsent(Id.of(updated), updated)) match {
         case Some(_) => conflict
         case None => {
-          subject(rd)
-            .onNext(WatchEvent(EventType.ADDED, updated))
-            .map(_ => obj) // NOTE ignores Ack.Stop
+          emitAndForget(WatchEvent(EventType.ADDED, updated))
+          Future.successful(obj)
         }
       }
     }
   }
 
-  def updateUnsynchronized[O <: skuber.ObjectResource](obj: O)(implicit fmt: Format[O], rd: ResourceDefinition[O], lc: client.LoggingContext): Future[O] = {
+  def updateUnsynchronized[O <: skuber.ObjectResource](obj: O)(implicit rd: ResourceDefinition[O]): Future[O] = {
     val res = resourceSet(rd)
     val id = Id.of(obj)
     Option(res.get(id)) match {
       case Some(existing) => if (existing.resourceVersion === obj.metadata.resourceVersion) {
         val updated = bumpResourceVersion(obj)
-        res.put(id, updated)
-        subject(rd)
-          .onNext(WatchEvent(EventType.MODIFIED, updated))
-          .map(_ => updated) // NOTE ignores Ack.Stop
+        if (obj.metadata.deletionTimestamp.isDefined && obj.metadata.finalizers.getOrElse(Nil).isEmpty) {
+          // If we've removed the last finalizer, hard delete it instead of updating.
+          // K8s might do this asynchronously, but the framework currently doesn't care and this makes tests easier
+          // if we delete synchronously
+          hardDeleteUnsynchronized(updated)
+            .map(_ => updated)(ExecutionContext.parasitic) // NOTE ignores Ack.Stop
+        } else {
+          res.put(id, updated)
+          emitAndForget(WatchEvent(EventType.MODIFIED, updated))
+          Future.successful(updated)
+        }
       } else conflict
       case None => notFound
     }
@@ -121,6 +191,13 @@ class FoperatorClient()(implicit s: Scheduler) extends KubernetesClient {
     }
   }
 
+  private def hardDeleteUnsynchronized[O <: skuber.ObjectResource](obj: O)(implicit rd: ResourceDefinition[O]): Future[Unit] = {
+    val res = resourceSet(rd) // TODO pass in?
+    res.remove(Id.of(obj))
+    emitAndForget(WatchEvent(EventType.DELETED, obj))
+    Future.unit
+  }
+
   override def delete[O <: skuber.ObjectResource](name: String, gracePeriodSeconds: Int)(implicit rd: ResourceDefinition[O], lc: client.LoggingContext): Future[Unit] = {
     state.synchronized {
       val res = resourceSet(rd)
@@ -128,10 +205,11 @@ class FoperatorClient()(implicit s: Scheduler) extends KubernetesClient {
       Option(res.get(id)) match {
         case None => notFound
         case Some(current) => {
-          res.remove(id)
-          subject(rd)
-            .onNext(WatchEvent(EventType.DELETED, current))
-            .map(_ => ())
+          startDeletion(current) match {
+            case None => hardDeleteUnsynchronized(current)
+            case Some(softDeleted) =>
+              updateUnsynchronized(softDeleted).map(_ => ())(ExecutionContext.parasitic)
+          }
         }
       }
     }
@@ -180,7 +258,7 @@ class FoperatorClient()(implicit s: Scheduler) extends KubernetesClient {
   override def watchAllContinuously[O <: skuber.ObjectResource](sinceResourceVersion: Option[String], bufSize: Int)(implicit fmt: Format[O], rd: ResourceDefinition[O], lc: client.LoggingContext): Source[WatchEvent[O], _] = ???
 
   override def watchWithOptions[O <: skuber.ObjectResource](options: skuber.ListOptions, bufsize: Int)(implicit fmt: Format[O], rd: ResourceDefinition[O], lc: client.LoggingContext): Source[WatchEvent[O], _] = {
-    Source.fromPublisher(subject(rd).toReactivePublisher)
+    Source.fromPublisher(subject(rd).toReactivePublisher(userScheduler))
   }
 
   override def getScale[O <: skuber.ObjectResource](objName: String)(implicit rd: ResourceDefinition[O], sc: Scale.SubresourceSpec[O], lc: client.LoggingContext): Future[Scale] = ???

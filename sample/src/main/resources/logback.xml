@@ -28,11 +28,13 @@
     <logger name="net.gfxmonk.foperator.sample.Mutator" additivity="false">
         <appender-ref ref="MUTATOR" />
     </logger>
-    <logger name="net.gfxmonk.foperator.sample.AdvancedTest" additivity="false">
+    <logger name="net.gfxmonk.foperator.sample.MutatorTest" additivity="false">
         <appender-ref ref="MUTATOR" />
     </logger>
 
     <logger name="net.gfxmonk.foperator.ResourceMirrorImpl" level="TRACE"/>
+    <logger name="net.gfxmonk.foperator.internal.Dispatcher" level="TRACE"/>
+    <logger name="net.gfxmonk.foperator.internal.ResourceLoop" level="TRACE"/>
 
     <logger name="skuber.api" level="WARN"/>
 </configuration>

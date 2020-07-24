@@ -232,15 +232,8 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
     )
   }
 
-  private def collectLive[T](map: ResourceMirror.ResourceStateMap[T])(implicit pp: PrettyPrint[T]): Task[Map[String, T]] = Task {
-    val (deleting, activePairs) = map.partitionMap {
-      case (key, ResourceState.Active(person)) => Right(key.name -> person)
-      case (_key, ResourceState.SoftDeleted(person)) => Left(person)
-    }
-    deleting.foreach { obj =>
-      logger.error(s"Person awaiting deletion: ${pp.pretty(obj)}")
-    }
-    activePairs.toMap
+  private def dropNamespaceFromKey[T](map: ResourceMirror.ResourceStateMap[T]): Map[String, ResourceState[T]] = {
+    map.map { case (k,v) => (k.name, v) }
   }
 
   def nextAction(random: Random, filter: Action => Boolean): Task[Action] = {
@@ -269,8 +262,8 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
   def stateValidator = {
     for {
       // TODO check finalizing folks, too
-      peopleMap <- people.all.flatMap(collectLive(_))
-      greetingsMap <- greetings.all.flatMap(collectLive(_))
+      peopleMap <- people.all.map(dropNamespaceFromKey(_))
+      greetingsMap <- greetings.all.map(dropNamespaceFromKey(_))
     } yield new StateValidator(peopleMap, greetingsMap)
   }
 
