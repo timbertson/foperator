@@ -17,7 +17,7 @@
         </encoder>
     </appender>
 
-    <root level="DEBUG">
+    <root level="INFO">
         <appender-ref ref="STDOUT" />
     </root>
 
@@ -32,9 +32,7 @@
         <appender-ref ref="MUTATOR" />
     </logger>
 
-    <logger name="net.gfxmonk.foperator.ResourceMirrorImpl" level="TRACE"/>
-    <logger name="net.gfxmonk.foperator.internal.Dispatcher" level="TRACE"/>
-    <logger name="net.gfxmonk.foperator.internal.ResourceLoop" level="TRACE"/>
+    <logger name="net.gfxmonk.foperator" level="TRACE"/>
 
     <logger name="skuber.api" level="WARN"/>
 </configuration>

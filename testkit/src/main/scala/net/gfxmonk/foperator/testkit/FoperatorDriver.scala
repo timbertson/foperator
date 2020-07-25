@@ -6,10 +6,11 @@ import java.util.concurrent.ConcurrentHashMap
 import akka.stream.scaladsl.{Sink, Source}
 import akka.util.ByteString
 import cats.implicits._
-import monix.execution.Scheduler
+import monix.execution.{Ack, Scheduler}
 import monix.reactive.MulticastStrategy
 import monix.reactive.subjects.ConcurrentSubject
-import net.gfxmonk.foperator.{Id, ResourceMirror, ResourceMirrorImpl}
+import net.gfxmonk.foperator.internal.Logging
+import net.gfxmonk.foperator.{Id, ResourceMirror, ResourceMirrorImpl, ResourceState}
 import play.api.libs.json.{Format, JsArray, Writes}
 import skuber.api.client
 import skuber.api.client.{EventType, KubernetesClient, LoggingConfig, WatchEvent}
@@ -17,12 +18,18 @@ import skuber.api.patch.Patch
 import skuber.{CustomResource, K8SException, LabelSelector, ObjectResource, Pod, ResourceDefinition, Scale}
 
 import scala.concurrent.{ExecutionContext, Future, Promise}
+import scala.jdk.CollectionConverters._
+import scala.util.{Failure, Success}
 
 class FoperatorDriver[T](userScheduler: Scheduler) {
   val client: FoperatorClient = new FoperatorClient(userScheduler)
 
   def mirror[O<:ObjectResource]()(implicit rd: ResourceDefinition[O]): ResourceMirror[O] = {
     client.mirror[O]()
+  }
+
+  def list[O<:ObjectResource](implicit rd: ResourceDefinition[O]): Iterable[ResourceState[O]] = {
+    client.resourceSet(rd).values.asScala.map(ResourceState.of)
   }
 }
 
@@ -31,7 +38,7 @@ object FoperatorClient {
   type ResourceSet[T] = ConcurrentHashMap[Id[T], T]
 }
 
-class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient {
+class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Logging {
   import FoperatorClient._
   private val state: ResourceMap[ResourceSet[_]] = new ConcurrentHashMap[ResourceDefinition[_], ResourceSet[_]]()
   private val subjects: ResourceMap[ConcurrentSubject[_,_]] = new ConcurrentHashMap[ResourceDefinition[_], ConcurrentSubject[_,_]]()
@@ -47,19 +54,27 @@ class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient {
     new ResourceMirrorImpl[O](Nil, subject(rd))
   }
 
-  private def resourceSet[T<:ObjectResource](rd: ResourceDefinition[T]): ResourceSet[T] = {
+  private [testkit] def resourceSet[T<:ObjectResource](rd: ResourceDefinition[T]): ResourceSet[T] = {
     state.putIfAbsent(rd, new ConcurrentHashMap[ResourceDefinition[T], ResourceSet[T]]().asInstanceOf[ResourceSet[_]])
     // cast should be safe since it's keyed on ResourceDefinition
     (state.get(rd): ResourceSet[_]).asInstanceOf[ResourceSet[T]]
   }
 
   private def subject[O<: ObjectResource](rd: ResourceDefinition[O]): ConcurrentSubject[WatchEvent[O],WatchEvent[O]] = {
-    subjects.putIfAbsent(rd, ConcurrentSubject(MulticastStrategy.publish)(userScheduler))
+    subjects.computeIfAbsent(rd, _ => {
+      logger.trace(s"Creating ConcurrentSubject for ${rd.spec.names.kind}")
+      ConcurrentSubject(MulticastStrategy.publish)(userScheduler)
+    })
     (subjects.get(rd): ConcurrentSubject[_,_]).asInstanceOf[ConcurrentSubject[WatchEvent[O],WatchEvent[O]]]
   }
 
   private def emitAndForget[O<: ObjectResource](event: WatchEvent[O])(implicit rd: ResourceDefinition[O]): Unit = {
-    subject(rd).onNext(event) // NOTE ignores Ack.Stop
+    logger.debug(s"Emitting: ${event}")
+    subject(rd).onNext(event).onComplete {
+      case Success(Ack.Stop) => logger.warn("Ignoring Ack.Stop")
+      case Success(Ack.Continue) => ()
+      case Failure(t) => logger.error("uncaught failure from emit", t)
+    }(ExecutionContext.parasitic)
   }
 
   private def getId[O <: skuber.ObjectResource](id: Id[O])(implicit rd: ResourceDefinition[O]): Option[O] = {

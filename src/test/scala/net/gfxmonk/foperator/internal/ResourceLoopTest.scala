@@ -10,7 +10,7 @@ import net.gfxmonk.foperator.{ReconcileResult, Reconciler, ResourceState}
 import scala.collection.mutable.ListBuffer
 import scala.concurrent.duration._
 
-class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec {
+class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec with Logging {
   implicit val scheduler = TestScheduler()
 
   class Context(initial: String, delegate: (Int, ResourceState[String]) => Task[ReconcileResult]) {
@@ -57,7 +57,14 @@ class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec {
       backoffTime
     }
 
-    val loop = new ResourceLoop(Task.pure(Some(ResourceState.Active(initial))), reconciler, Some(refreshInterval), permitScope, calculateBackoff)
+    val loop = new ResourceLoop(
+      Task.pure(Some(ResourceState.Active(initial))),
+      reconciler,
+      Some(refreshInterval),
+      permitScope,
+      calculateBackoff,
+      onError = t => Task(logger.error("loop failed", t))
+    )
   }
 
   def defaultReconciler[T](iteration: Int, item: ResourceState[T]): Task[ReconcileResult] = Task.pure(ReconcileResult.Ok)

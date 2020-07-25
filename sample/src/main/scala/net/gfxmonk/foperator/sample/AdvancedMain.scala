@@ -3,20 +3,17 @@ package net.gfxmonk.foperator.sample
 import cats.effect.ExitCode
 import cats.implicits._
 import monix.eval.{Task, TaskApp}
-import monix.execution.Scheduler
 import net.gfxmonk.foperator._
 import net.gfxmonk.foperator.implicits._
 import net.gfxmonk.foperator.internal.Logging
-import skuber.api.client.KubernetesClient
+import net.gfxmonk.foperator.sample.Implicits._
 import skuber.apiextensions.CustomResourceDefinition
-import skuber.k8sInit
 
 import scala.util.Try
 
 object AdvancedMain {
   def main(args: Array[String]): Unit = {
-    import Implicits._
-    new AdvancedOperator(Scheduler.global, k8sInit).main(args)
+    new AdvancedOperator(SchedulerImplicits.global).main(args)
   }
 }
 
@@ -24,12 +21,12 @@ object AdvancedOperator {
   val finalizerName = s"AdvancedMain.${Models.greetingSpec.apiGroup}"
 }
 
-class AdvancedOperator(scheduler: Scheduler, client: KubernetesClient) extends TaskApp with Logging {
-  import Implicits._
-  import Models._
+class AdvancedOperator(implicits: SchedulerImplicits) extends TaskApp with Logging {
   import AdvancedOperator._
-  implicit val _sched: Scheduler = scheduler
-  implicit val _client: KubernetesClient = client
+  import Models._
+  implicit val _scheduler = implicits.scheduler
+  implicit val client = implicits.k8sClient
+  implicit val materializer = implicits.materializer
 
   override def run(args: List[String]): Task[ExitCode] = {
     install() >> ResourceMirror.all[Greeting].use { greetings =>
@@ -47,7 +44,7 @@ class AdvancedOperator(scheduler: Scheduler, client: KubernetesClient) extends T
   }
 
   def install() = {
-    (new SimpleOperator(scheduler, client)).install() >>
+    (new SimpleOperator(implicits)).install() >>
       Operations.write[CustomResourceDefinition]((res, meta) => res.copy(metadata = meta))(personCrd).void
   }
 
@@ -163,7 +160,7 @@ class AdvancedOperator(scheduler: Scheduler, client: KubernetesClient) extends T
       }
     }
 
-    val operator = Operator[Person](finalizer = Finalizer(finalizerName)(finalize))
+    val operator = Operator[Person](finalizer = Finalizer(finalizerName)(finalize), refreshInterval = None)
 
     new Controller[Person](operator, ControllerInput(peopleMirror))
   }

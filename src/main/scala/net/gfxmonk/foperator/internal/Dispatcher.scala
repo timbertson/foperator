@@ -7,6 +7,8 @@ import monix.reactive.Observable
 import net.gfxmonk.foperator._
 import skuber.ObjectResource
 
+import scala.concurrent.Promise
+
 object Dispatcher {
   trait PermitScope {
     def withPermit[A](task: Task[A]): Task[A]
@@ -32,7 +34,15 @@ class Dispatcher[Loop[_], T<:ObjectResource](
   manager: ResourceLoop.Manager[Loop],
   permitScope: Dispatcher.PermitScope
 ) extends Logging {
+  private val error = Promise[Unit]()
+  private def onError(throwable: Throwable) = Task { error.tryFailure(throwable) }.void
+
   def run(input: Observable[Input[Id[T]]]): Task[Unit] = {
+    Task.race(Task.fromFuture(error.future), runloop(input)).void
+  }
+
+  private def runloop(input: Observable[Input[Id[T]]]): Task[Unit] = {
+    Task(logger.trace("Starting runloop")) >>
     input.mapAccumulate(Map.empty[Id[T],Loop[T]]) { (map:Map[Id[T],Loop[T]], input) =>
       val result: (Map[Id[T],Loop[T]], Task[Unit]) = input match {
         case Input.HardDeleted(id) => {
@@ -47,7 +57,7 @@ class Dispatcher[Loop[_], T<:ObjectResource](
             }
             case None => {
               logger.trace(s"Creating resource loop for ${id}")
-              val loop = manager.create[T](getResource(id), reconciler, permitScope)
+              val loop = manager.create[T](getResource(id), reconciler, permitScope, onError)
               (map.updated(id, loop), Task.unit)
             }
           }

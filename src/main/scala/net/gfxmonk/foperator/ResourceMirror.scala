@@ -130,33 +130,46 @@ private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: 
   private [foperator] val future = updates.consumeWith(Consumer.foreachEval { (event:WatchEvent[T]) =>
     val id = Id.of(event._object)
     if (logger.isTraceEnabled) {
-      logger.debug(s"[${logIdCommon}] Saw event ${event._type} on ${id}, object = ${event._object}")
+      logger.trace(s"[${logIdCommon}] Saw event ${event._type} on ${id}, object = ${event._object}")
     } else {
       logger.debug(s"[${logIdCommon}] Saw event ${event._type} on ${id}")
     }
     val input = event._type match {
-      case EventType.ERROR => ??? // TODO log and ignore?
+      case EventType.ERROR =>
+        logger.error(s"Error event in kubernetes watch: ${event}")
+        state.transform(_.removed(id))
+        None
+
       case EventType.DELETED => {
         state.transform(_.removed(id))
-        Input.HardDeleted(id)
+        Some(Input.HardDeleted(id))
       }
       case EventType.ADDED | EventType.MODIFIED => {
         state.transform(_.updated(id, ResourceState.of(event._object)))
-        Input.Updated(id)
+        Some(Input.Updated(id))
       }
     }
-    listeners.read.flatMap { listenerFns =>
-      listenerFns.toList.traverse(_(input)).void
-    }
+    input.map { input =>
+      logger.trace(s"[$logIdCommon] Emitting downstream...")
+      // TODO this one seems to return, but the other isn't?
+      listeners.tryRead.map { listenerFns =>
+        logger.trace(s"[$logIdCommon] ( $listeners| to: $listenerFns)...")
+      } >>
+      listeners.read.flatMap { listenerFns =>
+        logger.trace(s"[$logIdCommon] Emitting to ${listenerFns.size} listeners")
+        listenerFns.toList.traverse(_(input)).void
+      }
+    }.getOrElse(Task.unit)
   }).runToFuture
 
   def ids: Observable[Input[Id[T]]] = {
     new Observable[Input[Id[T]]] {
       override def unsafeSubscribeFn(subscriber: Subscriber[Input[Id[T]]]): Cancelable = {
         val logId = s"[${logIdCommon}-${subscriber.hashCode}]"
-        logger.debug(s"$logId Adding subscriber")
+        logger.trace(s"$logId Adding subscriber")
         def emit(id: Input[Id[T]]): Task[Unit] = {
           Task.defer {
+            logger.trace(s"$logId Emitting item $id")
             val future = subscriber.onNext(id)
             future.value match {
               case Some(value) => Task.fromTry(value)
@@ -172,7 +185,7 @@ private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: 
           }
         }
         def cancel = transformSubscribers { s =>
-          logger.debug(s"$logId Removing subscriber")
+          logger.trace(s"$logId Removing subscriber")
           s - emit
         }
 
@@ -180,8 +193,10 @@ private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: 
           // take listeners mutex while sending initial set, so that
           // concurrent updates are guaranteed to see the new subscriber
           listenerFns <- listeners.take
+          _ <- Task(logger.trace("took listener mutex, emitting"))
           _ <- state.get.keys.toList.traverse(id => emit(Input.Updated(id))).void
           _ <- listeners.put(listenerFns + emit)
+          _ <- Task(logger.trace("released listener mutex"))
           _ <- Task.never[Unit]
         } yield ())
           .doOnCancel(cancel)

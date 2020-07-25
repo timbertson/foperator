@@ -36,10 +36,11 @@ class StateValidator(people: Map[String, ResourceState[Person]], greetings: Map[
     val activeGreetings = greetings.values.toList.mapFilter(ResourceState.active)
     val needsFinalizer = activeGreetings.exists(_.status.exists(_.people.contains_(person.name)))
     val hasFinalizer = person.metadata.finalizers.getOrElse(Nil).contains_(AdvancedOperator.finalizerName)
+    // Having an unnecessary finalizer is OK, it may have been due to a (hard-deleted) greeting.
+    // Cleaning up people finalizers on greeting deletion would mean adding finalizers to greetings,
+    // which doesn't seem worth it.
     if (needsFinalizer && !hasFinalizer) {
       Validated.invalidNel(s"Person needs finalizer but none is set: ${person}")
-    } else if (!needsFinalizer && hasFinalizer) {
-      Validated.invalidNel(s"Person has unnecessary finalizer: ${person}")
     } else {
       Validated.validNel(())
     }

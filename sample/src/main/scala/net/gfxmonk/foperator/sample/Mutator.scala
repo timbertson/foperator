@@ -2,12 +2,11 @@ package net.gfxmonk.foperator.sample
 
 import java.util.concurrent.TimeUnit
 
+import akka.stream.ActorMaterializer
 import cats.Eq
-import cats.data.{NonEmptyList, Validated, ValidatedNec, ValidatedNel}
 import cats.effect.ExitCode
 import cats.implicits._
 import monix.eval.{Task, TaskApp}
-import monix.execution.Scheduler
 import monix.reactive.Observable
 import net.gfxmonk.foperator._
 import net.gfxmonk.foperator.internal.Logging
@@ -15,21 +14,21 @@ import net.gfxmonk.foperator.sample.Implicits._
 import net.gfxmonk.foperator.sample.Models.{Greeting, GreetingSpec, Person, PersonSpec}
 import play.api.libs.json.Format
 import skuber.api.client.KubernetesClient
-import skuber.{CustomResource, HasStatusSubresource, ObjectResource, ResourceDefinition, k8sInit}
+import skuber.{CustomResource, HasStatusSubresource, ObjectResource, ResourceDefinition}
 
-import scala.collection.mutable.ListBuffer
 import scala.concurrent.duration.FiniteDuration
 import scala.util.{Failure, Random, Success}
 
 object SimpleWithMutator extends TaskApp with Logging {
   override def run(args: List[String]): Task[ExitCode] = {
-    implicit val client = k8sInit
-    val simple = new SimpleOperator(scheduler, client)
-    val advanced = new AdvancedOperator(scheduler, client)
-    advanced.install() >> Mutator.withResourceMirrors(client) { (greetings, people) =>
+    val implicits = SchedulerImplicits(scheduler)
+    val simple = new SimpleOperator(implicits)
+    val advanced = new AdvancedOperator(implicits)
+    implicit val mat = implicits.materializer
+    advanced.install() >> Mutator.withResourceMirrors(implicits.k8sClient) { (greetings, people) =>
       Task.parZip2(
         simple.runWith(greetings),
-        new Mutator(client, greetings, people).run
+        new Mutator(implicits.k8sClient, greetings, people).run
       ).void
     }
   }.map(_ => ExitCode.Success)
@@ -37,12 +36,13 @@ object SimpleWithMutator extends TaskApp with Logging {
 
 object AdvancedWithMutator extends TaskApp {
   override def run(args: List[String]): Task[ExitCode] = {
-    implicit val client = k8sInit
-    val advanced = new AdvancedOperator(scheduler, client)
-    advanced.install() >> Mutator.withResourceMirrors(client) { (greetings, people) =>
+    val implicits = SchedulerImplicits(scheduler)
+    val advanced = new AdvancedOperator(implicits)
+    implicit val mat = implicits.materializer
+    advanced.install() >> Mutator.withResourceMirrors(implicits.k8sClient) { (greetings, people) =>
       Task.parZip2(
         advanced.runWith(greetings, people),
-        new Mutator(client, greetings, people).run
+        new Mutator(implicits.k8sClient, greetings, people).run
       ).void
     }
   }.map(_ => ExitCode.Success)
@@ -157,7 +157,7 @@ object Mutator extends Logging {
 
   // Since we want to share one mirror globally, we use this as the toplevel hook, and run
   // all mutators / operators within the `op`
-  def withResourceMirrors(client: KubernetesClient)(op: (ResourceMirror[Greeting], ResourceMirror[Person]) => Task[Unit]): Task[Unit] = {
+  def withResourceMirrors(client: KubernetesClient)(op: (ResourceMirror[Greeting], ResourceMirror[Person]) => Task[Unit])(implicit mat: ActorMaterializer): Task[Unit] = {
     implicit val _client = client
     Task(logger.info("Loading ... ")) >>
       ResourceMirror.all[Greeting].use { greetings =>

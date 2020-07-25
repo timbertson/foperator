@@ -14,8 +14,9 @@ trait Finalizer[T] {
   def reconcileState(resource: ResourceState[T]): Task[ResourceState[T]]
 }
 
-class CustomResourceFinalizer[Sp,St](name: String, destroy: CustomResource[Sp,St] => Task[Unit])
-                                    (
+class CustomResourceFinalizer[Sp,St](name: String,
+                                     destroy: CustomResource[Sp,St] => Task[Unit],
+                                    )(
                                       implicit fmt: Format[CustomResource[Sp,St]],
                                       rd: ResourceDefinition[CustomResource[Sp,St]],
                                       st: HasStatusSubresource[CustomResource[Sp,St]],
@@ -45,16 +46,7 @@ class CustomResourceFinalizer[Sp,St](name: String, destroy: CustomResource[Sp,St
           Task.pure(resource.unchanged)
         }
       }
-      case ResourceState.Active(resource) =>
-        // TODO don't auto-add this, use Reconciler.withFinalizer or Reconciler.addFinalizerIf
-        ???
-//        // Not deleted, add if missing:
-//        logger.debug(s"Adding finalizer to ${Id.of(resource)} [$name]")
-//        Task.pure(if (hasMine(resource)) { resource.unchanged } else {
-//          resource.metadataUpdate(resource.metadata.copy(
-//            finalizers = Some(name :: finalizers(resource))
-//          ))
-//        })
+      case ResourceState.Active(resource) => Task.pure(resource.unchanged)
     }
   }
 

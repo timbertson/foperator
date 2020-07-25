@@ -2,6 +2,7 @@ package net.gfxmonk.foperator.internal
 
 import java.util.concurrent.TimeUnit
 
+import cats.effect.ExitCase
 import monix.eval.Task
 import monix.execution.{Cancelable, Scheduler}
 import net.gfxmonk.foperator.internal.Dispatcher.PermitScope
@@ -14,7 +15,7 @@ import scala.util.{Failure, Success}
 
 object ResourceLoop {
   trait Manager[Loop[_]] {
-    def create[T](currentState: Task[Option[ResourceState[T]]], reconciler: Reconciler[ResourceState[T]], permitScope: PermitScope): Loop[T]
+    def create[T](currentState: Task[Option[ResourceState[T]]], reconciler: Reconciler[ResourceState[T]], permitScope: PermitScope, onError: Throwable => Task[Unit]): Loop[T]
     def update[T](loop: Loop[T]): Task[Unit]
     def destroy[T](loop: Loop[T]): Task[Unit]
   }
@@ -29,9 +30,12 @@ object ResourceLoop {
 
   def manager[T<:AnyRef](refreshInterval: Option[FiniteDuration])(implicit scheduler: Scheduler): Manager[ResourceLoop] =
     new Manager[ResourceLoop] {
-      override def create[T](currentState: Task[Option[ResourceState[T]]], reconciler: Reconciler[ResourceState[T]], permitScope: PermitScope): ResourceLoop[T] = {
+      override def create[T]( currentState: Task[Option[ResourceState[T]]],
+                              reconciler: Reconciler[ResourceState[T]],
+                              permitScope: PermitScope,
+                              onError: Throwable => Task[Unit]): ResourceLoop[T] = {
         def backoffTime(errorCount: ErrorCount) = Math.pow(1.2, errorCount.value.toDouble).seconds
-        new ResourceLoop[T](currentState, reconciler, refreshInterval, permitScope, backoffTime)
+        new ResourceLoop[T](currentState, reconciler, refreshInterval, permitScope, backoffTime, onError)
       }
       override def update[T](loop: ResourceLoop[T]): Task[Unit] = loop.update
       override def destroy[T](loop: ResourceLoop[T]): Task[Unit] = Task(loop.cancel())
@@ -44,7 +48,8 @@ class ResourceLoop[T](
                        reconciler: Reconciler[ResourceState[T]],
                        refreshInterval: Option[FiniteDuration],
                        permitScope: PermitScope,
-                       backoffTime: ErrorCount => FiniteDuration
+                       backoffTime: ErrorCount => FiniteDuration,
+                       onError: Throwable => Task[Unit]
                      )(implicit scheduler: Scheduler) extends Cancelable with Logging {
   // loop is:
   // busy (schedule another when ready)
@@ -62,15 +67,7 @@ class ResourceLoop[T](
     logger.trace(s"$logId reset `modified` to fresh promise")
   }
 
-  private val cancelable = reconcileNow(ErrorCount.zero).runToFuture
-
-  // TODO can something above us fail in the unlikely event this future dies?
-  cancelable.onComplete {
-    case Success(()) => ()
-    case Failure(error) => {
-      logger.error(s"$logId fatal error: $error")
-    }
-  }
+  private val cancelable = reconcileNow(ErrorCount.zero).onErrorHandleWith(onError).runToFuture
 
   override def cancel(): Unit = cancelable.cancel()
 

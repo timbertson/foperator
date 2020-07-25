@@ -2,28 +2,27 @@ package net.gfxmonk.foperator.sample
 
 import akka.actor.ActorSystem
 import akka.stream.ActorMaterializer
-import net.gfxmonk.foperator.{CustomResourceUpdate, ResourceState}
+import monix.execution.Scheduler
 import net.gfxmonk.foperator.Update.{Metadata, Spec, Status, Unchanged}
 import net.gfxmonk.foperator.sample.Models.{GreetingSpec, GreetingStatus, PersonSpec, PersonStatus}
 import net.gfxmonk.foperator.sample.Mutator.Action
+import net.gfxmonk.foperator.{CustomResourceUpdate, ResourceState}
+import skuber.api.client.KubernetesClient
 import skuber.{CustomResource, ObjectMeta, ResourceDefinition, k8sInit}
 
-object Implicits {
-  // TODO inject scheduler
-  implicit val system = ActorSystem()
-  implicit val materializer = ActorMaterializer()
-  implicit val dispatcher = system.dispatcher
+import scala.concurrent.ExecutionContext
 
+object Implicits {
   implicit val prettyPrintObjectMeta: PrettyPrint[ObjectMeta] = new PrettyPrint[ObjectMeta] {
     override def pretty(value: ObjectMeta): String = s"Meta(v${value.resourceVersion}, finalizers=${value.finalizers.getOrElse(Nil)}, deletionTimestamp=${value.deletionTimestamp})"
   }
 
   implicit def prettyPrintCustomResource[Sp, St](
-    implicit ppSp: PrettyPrint[Sp],
-    ppSt: PrettyPrint[St],
-    ppMeta: PrettyPrint[ObjectMeta],
-    rd: ResourceDefinition[CustomResource[Sp, St]]
-  ): PrettyPrint[CustomResource[Sp, St]] = new PrettyPrint[CustomResource[Sp, St]] {
+                                                  implicit ppSp: PrettyPrint[Sp],
+                                                  ppSt: PrettyPrint[St],
+                                                  ppMeta: PrettyPrint[ObjectMeta],
+                                                  rd: ResourceDefinition[CustomResource[Sp, St]]
+                                                ): PrettyPrint[CustomResource[Sp, St]] = new PrettyPrint[CustomResource[Sp, St]] {
     override def pretty(value: CustomResource[Sp, St]): String = s"${rd.spec.names.kind}(${value.name}, ${ppSp.pretty(value.spec)}, ${value.status.map(ppSt.pretty).getOrElse("None")}, ${ppMeta.pretty(value.metadata)})"
   }
 
@@ -58,4 +57,25 @@ object Implicits {
 
   implicit val prettyGreetingSpec: PrettyPrint[GreetingSpec] = PrettyPrint.fromString[GreetingSpec]
   implicit val prettyGreetingStatus: PrettyPrint[GreetingStatus] = PrettyPrint.fromString[GreetingStatus]
+}
+
+// There's a few implicits that are all tied to the given scheduler.
+// We don't want to have to write them all up in every Main class, so we bundle them here
+class SchedulerImplicits(s: Scheduler, client: Option[KubernetesClient]) {
+  implicit val scheduler: Scheduler = s
+  implicit val system: ActorSystem = ActorSystem(
+    name = "operatorActorSystem",
+    config = None,
+    classLoader = None,
+    defaultExecutionContext = Some[ExecutionContext](scheduler)
+  )
+  implicit val materializer = ActorMaterializer()
+
+  implicit val k8sClient: KubernetesClient = client.getOrElse(k8sInit)
+}
+
+object SchedulerImplicits {
+  def apply(scheduler: Scheduler) = new SchedulerImplicits(scheduler, None)
+  def full(scheduler: Scheduler, client: KubernetesClient) = new SchedulerImplicits(scheduler, Some(client))
+  def global: SchedulerImplicits = apply(Scheduler.global)
 }

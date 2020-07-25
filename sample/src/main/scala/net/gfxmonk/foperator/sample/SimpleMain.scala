@@ -2,18 +2,14 @@ package net.gfxmonk.foperator.sample
 
 import cats.effect.ExitCode
 import monix.eval.{Task, TaskApp}
-import monix.execution.Scheduler
-import net.gfxmonk.foperator.implicits._
 import net.gfxmonk.foperator._
+import net.gfxmonk.foperator.implicits._
 import net.gfxmonk.foperator.sample.Models.{Greeting, GreetingStatus}
-import skuber.api.client.KubernetesClient
 import skuber.apiextensions.CustomResourceDefinition
-import skuber.k8sInit
 
 object SimpleMain {
   def main(args: Array[String]): Unit = {
-    import Implicits._
-    new SimpleOperator(Scheduler.global, k8sInit).main(args)
+    new SimpleOperator(SchedulerImplicits.global).main(args)
   }
 }
 
@@ -22,11 +18,11 @@ object SimpleOperator {
     GreetingStatus(s"hello, ${greeting.spec.name.getOrElse("UNKNOWN")}", people = Nil)
 }
 
-class SimpleOperator(scheduler: Scheduler, client: KubernetesClient) extends TaskApp {
-  import Implicits._
+class SimpleOperator(implicits: SchedulerImplicits) extends TaskApp {
   import Models._
-  implicit val _sched: Scheduler = scheduler
-  implicit val _client: KubernetesClient = client
+  implicit val _scheduler = implicits.scheduler
+  implicit val client = implicits.k8sClient
+  implicit val materializer = implicits.materializer
 
   def install() = {
     Operations.write[CustomResourceDefinition]((res, meta) => res.copy(metadata=meta))(greetingCrd).void
