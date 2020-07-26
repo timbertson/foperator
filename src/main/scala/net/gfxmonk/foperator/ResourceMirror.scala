@@ -10,6 +10,7 @@ import monix.execution.atomic.Atomic
 import monix.execution.{Ack, Cancelable, Scheduler}
 import monix.reactive.observers.Subscriber
 import monix.reactive.{Consumer, Observable}
+import net.gfxmonk.foperator.ResourceMirrorImpl.IdSubscriber
 import net.gfxmonk.foperator.internal.Logging
 import play.api.libs.json.Format
 import skuber.api.client.{EventType, KubernetesClient, LoggingContext, WatchEvent}
@@ -83,16 +84,18 @@ object ResourceMirror extends Logging {
     client: KubernetesClient
   ): Resource[Task,ResourceMirrorImpl[T]] = {
     Resource.fromAutoCloseable[Task, ResourceMirrorImpl[T]] {
-      Task.deferFutureAction { implicit scheduler =>
-        implicit val lrf = ListResourceFormat[T]
-        client.listWithOptions[ListResource[T]](listOptions).map { listResource =>
-          val source = client.watchWithOptions[T](listOptions.copy(
-            resourceVersion = Some(listResource.resourceVersion),
-            timeoutSeconds = Some(30) // TODO
-          ))
-          val updates = Observable.fromReactivePublisher(source.runWith(Sink.asPublisher(fanout=false)))
-          logger.debug(s"ResourceMirror[${rd.spec.names.kind}] in sync, watching for updates")
-          new ResourceMirrorImpl[T](listResource.toList, updates)
+      ResourceMirrorImpl.mvar[T].flatMap { listeners =>
+        Task.deferFutureAction { implicit scheduler =>
+          implicit val lrf = ListResourceFormat[T]
+          client.listWithOptions[ListResource[T]](listOptions).map { listResource =>
+            val source = client.watchWithOptions[T](listOptions.copy(
+              resourceVersion = Some(listResource.resourceVersion),
+              timeoutSeconds = Some(30) // TODO
+            ))
+            val updates = Observable.fromReactivePublisher(source.runWith(Sink.asPublisher(fanout=false)))
+            logger.debug(s"ResourceMirror[${rd.spec.names.kind}] in sync, watching for updates")
+            new ResourceMirrorImpl[T](listResource.toList, updates, listeners)
+          }
         }
       }
     }
@@ -101,6 +104,11 @@ object ResourceMirror extends Logging {
 
 object ResourceMirrorImpl {
   private [foperator] type IdSubscriber[T] = Input[Id[T]] => Task[Unit]
+
+  private [foperator] def mvar[T] = MVar[Task].of(Set.empty[IdSubscriber[T]])
+
+  private [foperator] def apply[T<: ObjectResource](initial: List[T], updates: Observable[WatchEvent[T]])(implicit scheduler: Scheduler, rd: ResourceDefinition[T]) =
+    mvar[T].map(listeners => new ResourceMirrorImpl(initial, updates, listeners))
 }
 
 /**
@@ -111,11 +119,14 @@ object ResourceMirrorImpl {
  *    watcher (and other observers) to fall behind.
  *    In practice, this is typically consumed by Dispatcher, which doesn't backpressure.
  */
-private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: Observable[WatchEvent[T]])(implicit scheduler: Scheduler, rd: ResourceDefinition[T])
+private [foperator] class ResourceMirrorImpl[T<: ObjectResource](
+  initial: List[T],
+  updates: Observable[WatchEvent[T]],
+  listeners: MVar[Task, Set[IdSubscriber[T]]]
+)(implicit scheduler: Scheduler, rd: ResourceDefinition[T])
   extends AutoCloseable with ResourceMirror[T] with Logging {
   import ResourceMirrorImpl._
   private val state = Atomic(initial.map(obj => Id.of(obj) -> ResourceState.of(obj)).toMap)
-  private val listeners: MVar[Task, Set[IdSubscriber[T]]] = MVar[Task].of(Set.empty[IdSubscriber[T]]).runSyncUnsafe()
   private val logIdCommon = s"${rd.spec.names.kind}-${this.hashCode}"
   if(logger.isTraceEnabled) {
     state.get.values.foreach { res =>
@@ -150,11 +161,6 @@ private class ResourceMirrorImpl[T<: ObjectResource](initial: List[T], updates: 
       }
     }
     input.map { input =>
-      logger.trace(s"[$logIdCommon] Emitting downstream...")
-      // TODO this one seems to return, but the other isn't?
-      listeners.tryRead.map { listenerFns =>
-        logger.trace(s"[$logIdCommon] ( $listeners| to: $listenerFns)...")
-      } >>
       listeners.read.flatMap { listenerFns =>
         logger.trace(s"[$logIdCommon] Emitting to ${listenerFns.size} listeners")
         listenerFns.toList.traverse(_(input)).void
