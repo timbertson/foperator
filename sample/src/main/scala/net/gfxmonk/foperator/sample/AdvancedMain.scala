@@ -64,7 +64,9 @@ class AdvancedOperator(implicits: SchedulerImplicits) extends TaskApp with Loggi
   private def greetingUpdater(peopleMirror: ResourceMirror[Person])
     (update: Update.Status[Greeting, GreetingStatus])
     (implicit pp: PrettyPrint[CustomResourceUpdate[GreetingSpec, GreetingStatus]]): Task[ReconcileResult] = {
-    logger.info(s"Reconciled greeting, applying update: ${pp.pretty(Update.minimal(update))}")
+    if (Update.change(update).isRight) { // don't bother logging a no-op update
+      logger.info(s"Reconciled greeting, applying update: ${pp.pretty(update)}")
+    }
     val ids = GreetingStatus.peopleIds(update)
     val findPeople: Task[List[Person]] = {
       peopleMirror.active.flatMap { all =>
@@ -84,7 +86,7 @@ class AdvancedOperator(implicits: SchedulerImplicits) extends TaskApp with Loggi
       people <- findPeople
       // update the greeting first
       result <- updateGreeting
-      // Add finalizers last. If any of these fail due to concurrent modifications,
+      // Add finalizers last. If any of these fail due to concurrent modifications (e.g. deletion),
       // the reconcile will fail and this greeting will be reconciled again shortly.
       _ <- addFinalizers(people)
     } yield result

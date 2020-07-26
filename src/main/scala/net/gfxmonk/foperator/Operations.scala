@@ -1,16 +1,14 @@
 package net.gfxmonk.foperator
 
-import cats.{Applicative, Eq}
+import cats.Eq
 import cats.implicits._
 import monix.eval.Task
+import net.gfxmonk.foperator.implicits._
+import net.gfxmonk.foperator.internal.Logging
 import play.api.libs.json.Format
 import skuber.api.client.{KubernetesClient, LoggingContext}
 import skuber.{ObjectResource, _}
-import cats.implicits._
-import net.gfxmonk.foperator.internal.Logging
-import net.gfxmonk.foperator.implicits._
 
-import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
 sealed trait Update[T<:ObjectResource, +Sp, +St] {
@@ -38,20 +36,11 @@ object Update {
     }
   }
 
-//  def fold[T<:ObjectResource,Sp,St,R](update: Update[T,Sp,St])(passthru: T => R)(apply: Change[T,Sp,St] => R): R = update match {
-//    case Update.Unchanged(initial) => passthru(initial)
-//    case other:Change[T,Sp,St] => apply(other)
-//  }
-//
   def change[Sp,St](update: CustomResourceUpdate[Sp,St])(implicit eqSp: Eq[Sp], eqSt: Eq[St]):
     Either[CustomResource[Sp,St],Change[CustomResource[Sp,St],Sp,St]] = minimal(update) match {
     case Update.Unchanged(initial) => Left(initial)
     case other:Change[CustomResource[Sp,St],Sp,St] => Right(other)
   }
-//
-//  def applyWith[F[_], T<:ObjectResource,Sp,St](update: Update[T,Sp,St])(apply: Change[T,Sp,St] => F[T])(implicit F: Applicative[F]): F[T] = {
-//    fold(update)(F.pure)(apply)
-//  }
 }
 
 object Operations extends Logging {

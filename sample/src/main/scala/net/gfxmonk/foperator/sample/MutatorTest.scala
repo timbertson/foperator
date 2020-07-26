@@ -3,7 +3,7 @@ package net.gfxmonk.foperator.sample
 import cats.data.Validated
 import monix.eval.Task
 import monix.execution.Scheduler
-import monix.execution.atomic.AtomicBoolean
+import monix.execution.atomic.{Atomic, AtomicBoolean}
 import monix.execution.schedulers.{CanBlock, TestScheduler, TrampolineExecutionContext}
 import net.gfxmonk.foperator.internal.Logging
 import net.gfxmonk.foperator.sample.Implicits._
@@ -164,6 +164,9 @@ object MutatorTest extends Logging {
     implicit val client = implicits.k8sClient
     implicit val mat = implicits.materializer
 
+    val updateCount = Atomic(0)
+    val lastUpdateCount = Atomic(0)
+
     def validate(mutator: Mutator) = {
       // When using a real scheduler, we can't know fur sure when things have settled.
       // So instead, we do a small tick, and then keep ticking more and more while
@@ -173,23 +176,33 @@ object MutatorTest extends Logging {
       //   we just made
       // - The state is initially consistent, _but_ would get inconsistent if we waited
       //   longer (this seems unlikely)
-      // TODO: we could check the mirror state to see if the change we made has been reflected,
-      //       which would protect against the first issue.
+      // To mitigate the first, we always wait until at least one update has been seen
+      // by the test infrastructure, then start ticking from there.
 
       val maxTicks = 100
 
       def tickLoop(remaining: Int): Task[Unit] = {
-        Task.sleep(100.millis) >>
-        Task(logger.info(s"Checking consistency... (remaining attempts: $remaining)")) >>
-        mutator.stateValidator.flatMap { validator =>
-          validator.validate match {
-            case Validated.Valid(_) => Task.unit
-            case Validated.Invalid(_) => {
-              if (remaining > 0) {
-                // not consistent yet, keep trying
-                tickLoop(remaining-1)
-              } else {
-                assertValid(validator)
+        Task.sleep(10.millis) >>
+        Task.defer {
+          if (lastUpdateCount.get == updateCount.get) {
+            // no updates seen yet, short-circuit without decrementing `remaining`
+            tickLoop(remaining)
+          } else {
+            Task.sleep(100.millis) >>
+            Task(logger.info(s"Checking consistency... (remaining attempts: $remaining)")) >>
+            mutator.stateValidator.flatMap { validator =>
+              validator.validate match {
+                case Validated.Valid(_) =>
+                  // update lastUpdateCount for next loop
+                  Task { lastUpdateCount.set(updateCount.get) }
+                case Validated.Invalid(_) => {
+                  if (remaining > 0) {
+                    // not consistent yet, keep trying
+                    tickLoop(remaining-1)
+                  } else {
+                    assertValid(validator)
+                  }
+                }
               }
             }
           }
@@ -207,7 +220,17 @@ object MutatorTest extends Logging {
     (deleteAll >> Mutator.withResourceMirrors(client) { (greetings, people) =>
       val mutator = new Mutator(client, greetings, people)
       val main = new AdvancedOperator(implicits).runWith(greetings, people)
-      runWithValidation(params, mutator, main=main, tickAndValidate = validate(mutator))
+
+      // In parallel with main, we also trace when we see updates to resources.
+      // This lets validate check that _some_ update has been seen since the last action,
+      // even if we can't tell which update
+      val increaseUpdateCount = Task(updateCount.increment())
+      val mainWithMonitoring = Task.raceMany(List(
+        main,
+        greetings.ids.mapEval(_ => increaseUpdateCount).completedL,
+        people.ids.mapEval(_ => increaseUpdateCount).completedL
+      ))
+      runWithValidation(params, mutator, main = mainWithMonitoring, tickAndValidate = validate(mutator))
     }).runSyncUnsafe()(Scheduler.global, implicitly[CanBlock])
   }
 
