@@ -6,8 +6,9 @@ import java.util.concurrent.ConcurrentHashMap
 import akka.stream.scaladsl.{Sink, Source}
 import akka.util.ByteString
 import cats.implicits._
-import monix.execution.{Ack, Scheduler}
-import monix.reactive.MulticastStrategy
+import monix.execution.{Ack, Cancelable, Scheduler}
+import monix.reactive.observers.Subscriber
+import monix.reactive.{MulticastStrategy, Observable}
 import monix.reactive.subjects.ConcurrentSubject
 import net.gfxmonk.foperator.internal.Logging
 import net.gfxmonk.foperator.{Id, ResourceMirror, ResourceMirrorImpl, ResourceState}
@@ -51,7 +52,18 @@ class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Lo
 
   private [testkit] def mirror[O<:ObjectResource]()(implicit rd: ResourceDefinition[O]): ResourceMirror[O] = {
     implicit val s: Scheduler = userScheduler
-    new ResourceMirrorImpl[O](Nil, subject(rd))
+    val underlying = subject(rd)
+    val sub = new Observable[WatchEvent[O]] {
+      override def unsafeSubscribeFn(subscriber: Subscriber[WatchEvent[O]]): Cancelable = {
+        logger.trace(s"Subscribed: ${rd.spec.names.kind}")
+        val c = underlying.unsafeSubscribeFn(subscriber)
+        Cancelable { () =>
+          logger.trace(s"Unsubscribed: ${rd.spec.names.kind}")
+          c.cancel()
+        }
+      }
+    }
+    new ResourceMirrorImpl[O](Nil, sub)
   }
 
   private [testkit] def resourceSet[T<:ObjectResource](rd: ResourceDefinition[T]): ResourceSet[T] = {
@@ -63,7 +75,7 @@ class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Lo
   private def subject[O<: ObjectResource](rd: ResourceDefinition[O]): ConcurrentSubject[WatchEvent[O],WatchEvent[O]] = {
     subjects.computeIfAbsent(rd, _ => {
       logger.trace(s"Creating ConcurrentSubject for ${rd.spec.names.kind}")
-      ConcurrentSubject(MulticastStrategy.publish)(userScheduler)
+      ConcurrentSubject(MulticastStrategy.replayLimited(10))(userScheduler)
     })
     (subjects.get(rd): ConcurrentSubject[_,_]).asInstanceOf[ConcurrentSubject[WatchEvent[O],WatchEvent[O]]]
   }
@@ -273,7 +285,8 @@ class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Lo
   override def watchAllContinuously[O <: skuber.ObjectResource](sinceResourceVersion: Option[String], bufSize: Int)(implicit fmt: Format[O], rd: ResourceDefinition[O], lc: client.LoggingContext): Source[WatchEvent[O], _] = ???
 
   override def watchWithOptions[O <: skuber.ObjectResource](options: skuber.ListOptions, bufsize: Int)(implicit fmt: Format[O], rd: ResourceDefinition[O], lc: client.LoggingContext): Source[WatchEvent[O], _] = {
-    Source.fromPublisher(subject(rd).toReactivePublisher(userScheduler))
+    ???
+//    Source.fromPublisher(subject(rd).toReactivePublisher(userScheduler))
   }
 
   override def getScale[O <: skuber.ObjectResource](objName: String)(implicit rd: ResourceDefinition[O], sc: Scale.SubresourceSpec[O], lc: client.LoggingContext): Future[Scale] = ???

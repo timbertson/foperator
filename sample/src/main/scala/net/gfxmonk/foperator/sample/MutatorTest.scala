@@ -6,7 +6,8 @@ import java.util.concurrent.atomic.AtomicReference
 import cats.data.Validated
 import monix.eval.Task
 import monix.execution.atomic.{AtomicBoolean, AtomicInt}
-import monix.execution.schedulers.{CanBlock, TestScheduler, TrampolineExecutionContext, TrampolineScheduler}
+import monix.execution.internal.{Trampoline, TrampolineSpy}
+import monix.execution.schedulers.{CanBlock, TestScheduler, TrampolineExecutionContext, TrampolineScheduler, TrampolinedRunnable}
 import monix.execution.{Cancelable, ExecutionModel, Scheduler, UncaughtExceptionReporter}
 import net.gfxmonk.foperator.ResourceState
 import net.gfxmonk.foperator.internal.Logging
@@ -21,7 +22,7 @@ import scala.util.Random
 
 object MutatorTest extends Logging {
   val maxSteps = 40
-  val initThread = Scheduler.singleThread("initThread", daemonic = true)
+  val dedicatedThread = Scheduler.singleThread("initThread", daemonic = true)
   def main(args: Array[String]): Unit = {
     (args match {
       case Array() => while(true) {
@@ -102,13 +103,22 @@ object MutatorTest extends Logging {
     }
   }
 
-  class LoggingScheduler(s: TestScheduler) extends Scheduler with Logging {
-    private val idRef = AtomicInt(0)
+  class LoggingScheduler(s: TestScheduler, trampolineThreadLocal: Any) extends Scheduler with Logging {
     override def execute(command: Runnable): Unit = {
-      val id = Random.nextInt()
+      val id = s.state.lastID+1
       logger.trace(s"execute[$id]: $command [${Thread.currentThread.getName} // ${Thread.currentThread.getId}]");
 
-      s.execute(command)
+      command match {
+        case _: TrampolinedRunnable => {
+          logger.trace("[trampolined, direct execution]")
+          val trampoline = trampolineThreadLocal // .get()
+          logger.trace(s">trampoline ${trampoline}, ${TrampolineSpy.look(trampoline)}")
+          s.execute(command)
+          logger.trace(s"<trampoline ${trampoline}, ${TrampolineSpy.look(trampoline)}")
+        }
+        case _ => s.execute(command)
+      }
+      logger.trace(s"execute[$id]: resulting state: ${s.state}");
 //      s.execute(new Runnable {
 //        override def run(): Unit = {
 ////          logger.trace(s"[$id]: start")
@@ -150,7 +160,16 @@ object MutatorTest extends Logging {
 
     def tickOne(): Boolean = s.tickOne()
 
-    def tick(time: FiniteDuration = Duration.Zero): Unit = s.tick(time)
+    def tick(time: FiniteDuration = Duration.Zero): Unit = {
+      logger.trace("> tick")
+      while({ logger.trace(s"Running: ${s.state.tasks.headOption}"); s.tickOne() }) {
+        val state = s.state
+        logger.trace(s"ticked, tasks=${state.tasks}")
+      }
+//      s.tick(time)
+      logger.trace(s" trampoline ${trampolineThreadLocal}, ${TrampolineSpy.look(trampolineThreadLocal)}")
+      logger.trace("< tick")
+    }
   }
 
   class UnimplementedScheduler() extends Scheduler {
@@ -176,10 +195,33 @@ object MutatorTest extends Logging {
   }
 
   def testWithSeed(seed: Long) = {
+    val trampolineThreadLocal = {
+      import scala.reflect.runtime.{universe => ru}
+
+      val runMirror = ru.runtimeMirror(ru.getClass.getClassLoader)
+      val objectDef = Class.forName("monix.execution.schedulers.TrampolineExecutionContext")
+      val objectTypeModule = runMirror.moduleSymbol(objectDef).asModule
+      val objectType = objectTypeModule.typeSignature
+
+      val methodMap = objectType.members
+        .filter(_.isMethod)
+        .map(d => {
+          d.name.toString -> d.asMethod
+        })
+        .toMap
+
+      // get the scala Object
+      val instance = runMirror.reflectModule(objectTypeModule).instance
+      val instanceMirror = runMirror.reflect(instance)
+      // get the private value
+      instanceMirror.reflectMethod(methodMap("trampoline")).apply().asInstanceOf[ThreadLocal[_]].get()
+    }
+
 //    val testScheduler = new MyScheduler(TestScheduler(ExecutionModel.SynchronousExecution))
-    val testScheduler = new LoggingScheduler(TestScheduler(ExecutionModel.SynchronousExecution))
+    val testScheduler = new LoggingScheduler(TestScheduler(ExecutionModel.SynchronousExecution), trampolineThreadLocal)
 //    val testScheduler = TestScheduler()
     val realScheduler = Scheduler(TrampolineExecutionContext.immediate)
+
 
     val driver = new FoperatorDriver(testScheduler)
     implicit val client = driver.client
@@ -220,7 +262,7 @@ object MutatorTest extends Logging {
           Thread.sleep(1)
           testScheduler.tick(1.second)
         }
-      }(initThread)
+      }(dedicatedThread)
       val result = SchedulerImplicits.full(testScheduler, client)
       condition.set(true)
       Await.result(runScheduler, Duration.Inf)
@@ -256,11 +298,11 @@ object MutatorTest extends Logging {
           _ <- action.run
           _ <- Task(logger.info(s"Ticking..."))
 
-//          _ = Thread.sleep(500)
-//          _ = logger.trace("> tick")
-          _ = testScheduler.tick(10.seconds)
-//          _ = logger.trace("< tick")
-//          _ = testScheduler.tick(10.seconds)
+          // We tick on a dedicated thread, because otherwise the tick() call is happening on the main thread,
+          // which is also servicing trampolined executions for the TestScheduler.
+          // tl;dr if you do that, your `tick()` can return before it's actually finished running
+          // trampolined thunks x_x
+          _ <- Task(testScheduler.tick(10.seconds)).executeOn(dedicatedThread)
           _ <- Task(logger.info(s"Checking consistency..."))
           _ <- checkMirrorContents
           validator <- mutator.stateValidator
