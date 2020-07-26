@@ -1,16 +1,13 @@
 package net.gfxmonk.foperator.sample
 
-import minitest.laws.Checkers
 import net.gfxmonk.foperator.internal.Logging
-import org.scalacheck.Shrink
 import org.scalatest.funspec.AnyFunSpec
 
-// TODO PropSpec or something more direct?
-class AdvancedTest extends AnyFunSpec with Checkers with Logging {
-  import MutatorTest._
-
+class AdvancedTest extends AnyFunSpec with Logging {
   it("Reaches a consistent state after every mutation") {
-    implicit val disableShrink: Shrink[Int] = Shrink(_ => Stream.empty)
-    check1 { (seed: Int) => testWithSeed(seed); true }
+    val initalSeed = System.currentTimeMillis().toInt.toLong // toInt truncates to prevent overflow
+    Range.Long(initalSeed, initalSeed + 100, 1).foreach { seed =>
+      MutatorTest.test(MutationTestCase.withSeed(seed))
+    }
   }
 }

@@ -36,7 +36,6 @@ lazy val sample = (project in file("sample"))
     libraryDependencies ++= Seq(
       "ch.qos.logback" % "logback-classic" % "1.2.3",
       "com.typesafe.akka" %% "akka-slf4j" % "2.5.29",
-      "org.scalacheck" %% "scalacheck" % "1.14.1" % "test",
       "io.monix" %% "minitest" % "2.8.2" % "test",
       "io.monix" %% "minitest-laws" % "2.8.2" % "test",
     ),

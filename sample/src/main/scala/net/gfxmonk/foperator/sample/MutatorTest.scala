@@ -1,14 +1,10 @@
 package net.gfxmonk.foperator.sample
 
-import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.atomic.AtomicReference
-
 import cats.data.Validated
 import monix.eval.Task
-import monix.execution.atomic.{AtomicBoolean, AtomicInt}
-import monix.execution.internal.Trampoline
-import monix.execution.schedulers.{CanBlock, TestScheduler, TrampolineExecutionContext, TrampolineScheduler, TrampolinedRunnable}
-import monix.execution.{Cancelable, ExecutionModel, Scheduler, UncaughtExceptionReporter}
+import monix.execution.Scheduler
+import monix.execution.atomic.AtomicBoolean
+import monix.execution.schedulers.{CanBlock, TestScheduler, TrampolineExecutionContext}
 import net.gfxmonk.foperator.ResourceState
 import net.gfxmonk.foperator.internal.Logging
 import net.gfxmonk.foperator.sample.Implicits._
@@ -16,21 +12,28 @@ import net.gfxmonk.foperator.sample.Models._
 import net.gfxmonk.foperator.testkit.FoperatorDriver
 import skuber.ObjectResource
 
-import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration._
+import scala.concurrent.{Await, Future}
 import scala.util.Random
 
+case class MutationTestCase(seed: Long, steps: Int, maxActionsPerStep: Int) {
+  def withSeed(newSeed: Long) = copy(seed = newSeed)
+}
+object MutationTestCase {
+  val base = MutationTestCase(seed=0, steps=20, maxActionsPerStep=3)
+  def withSeed(seed: Long) = base.withSeed(seed)
+}
+
 object MutatorTest extends Logging {
-  val maxSteps = 40
   val dedicatedThread = Scheduler.singleThread("mutatorTest", daemonic = true)
 
   def main(args: Array[String]): Unit = {
-    (args match {
+    args match {
       case Array() => while(true) {
-        testWithSeed(System.currentTimeMillis())
+        test(MutationTestCase.withSeed(System.currentTimeMillis()))
       }
-      case args => args.map(_.toLong).foreach(testWithSeed)
-    })
+      case args => args.map(_.toLong).foreach(seed => test(MutationTestCase.withSeed(seed)))
+    }
   }
 
   def assertValid(validator: StateValidator) = {
@@ -44,7 +47,7 @@ object MutatorTest extends Logging {
     }
   }
 
-  def testWithSeed(seed: Long) = {
+  def test(params: MutationTestCase) = {
     // Scheduler juggling:
     //  - FoperatorClient operations are fully synchronous (despite retuning a Future).
     //    Whenever it schedules an update notification (for a watch), it does so
@@ -64,7 +67,7 @@ object MutatorTest extends Logging {
 
     val greetings = driver.mirror[Greeting]()
     val people = driver.mirror[Person]()
-    val rand = new Random(seed)
+    val rand = new Random(params.seed)
 
     val implicits = {
       // This is extremely silly: akka's logger setup synchronously blocks for the logger to (asynchronously)
@@ -103,23 +106,38 @@ object MutatorTest extends Logging {
       } yield ()
     }
 
-    val tick = Task {
+    val tick = {
+      def tickLoop: Task[Unit] = {
+        // We repeatedly call tick in a loop rather than calling Tick(Duration.INF)
+        // so that the timeout can have an effect
+        Task(testScheduler.tick(1.second)).flatMap { _ =>
+          if (testScheduler.state.tasks.nonEmpty) {
+            tickLoop
+          } else {
+            Task.unit
+          }
+        }
+      }
+
       // We tick on a dedicated thread, because otherwise the testScheduler.tick() call is happening on the
       // main thread, which is also servicing trampolined executions for the TestScheduler.
       // tl;dr if you do that, your `tick()` can return even though there are trampolined thunks
       // awaiting execution.
-      logger.info(s"Ticking...")
-      testScheduler.tick(10.seconds)
-    }.executeOn(dedicatedThread)
+      // The sample operator has periodic refresh disabled, so we know that:
+      //  - the only delayed schedules are due to error backoff, which we want to allow
+      //  - if something is in a reschedule loop, it'll keep going until it times out the Await
+      tickLoop.executeOn(dedicatedThread).timeout(1.second)
+    }
 
     def loop(stepNo: Int): Task[Unit] = {
-      if (stepNo >= maxSteps) {
+      if (stepNo >= params.steps) {
         Task(logger.info("Loop completed successfully"))
       } else {
         (for {
           action <- mutator.nextAction(rand, _ => true)
-          _ <- Task(logger.info(s"Running step #${stepNo} (seed: $seed) ${action}"))
+          _ <- Task(logger.info(s"Running step #${stepNo} ${action} (params: $params.seed)"))
           _ <- action.run
+          _ <- Task(logger.info(s"Ticking..."))
           _ <- tick
           _ <- Task(logger.info(s"Checking consistency..."))
           validator <- mutator.stateValidator
