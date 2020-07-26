@@ -85,6 +85,7 @@ object Mutator extends Logging {
   }
 
   sealed trait Action {
+    def conflictKey: Option[Id[_]]
     def run: Task[Unit]
     def pretty: String
   }
@@ -93,12 +94,16 @@ object Mutator extends Logging {
     override def run: Task[Unit] = Task.raiseError(new RuntimeException("No action found (reached a branch with no children)"))
 
     override def pretty: String = "Noop"
+
+    override def conflictKey: Option[Id[_]] = None
   }
 
   case class Delete[Sp,St](resource: CustomResource[Sp,St])(implicit rd: ResourceDefinition[CustomResource[Sp,St]], pp: PrettyPrint[CustomResource[Sp,St]], client: KubernetesClient) extends Action {
     override def run: Task[Unit] = Task.deferFuture(client.delete(resource.name))
 
     override def pretty: String = s"Delete[${rd.spec.names.kind}](${pp.pretty(resource)})"
+
+    override def conflictKey: Option[Id[_]] = Some(Id.of(resource))
   }
 
   case class Create[Sp,St](random: Random, resource: CustomResource[Sp,St])(
@@ -122,6 +127,8 @@ object Mutator extends Logging {
         Task.deferFuture(client.create(resource)).void
       }
     }
+
+    override def conflictKey: Option[Id[_]] = None
   }
 
   case class Modify[Sp,St](update: CustomResourceUpdate[Sp,St])(
@@ -135,6 +142,8 @@ object Mutator extends Logging {
   ) extends Action {
     override def run: Task[Unit] = Operations.apply(update).void
     def pretty: String = s"Modify[${rd.spec.names.kind}](${pp.pretty(update)})"
+
+    override def conflictKey: Option[Id[_]] = Some(Id.of(update.initial))
   }
 
   object Modify {
@@ -234,6 +243,23 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
 
   private def dropNamespaceFromKey[T](map: ResourceMirror.ResourceStateMap[T]): Map[String, ResourceState[T]] = {
     map.map { case (k,v) => (k.name, v) }
+  }
+
+  def nextActions(random: Random, count: Int, filter: Action => Boolean): Task[List[Action]] = {
+    // Picks `count` actions, ensuring that all `conflictKeys` are distinct (i.e. the actions occur on different objects)
+    def pick(existing: List[Action]): Task[List[Action]] = {
+      if (existing.size == count) {
+        Task.pure(existing)
+      } else {
+        val conflicts = existing.flatMap(_.conflictKey)
+        nextAction(random, { action =>
+          filter(action) && (!action.conflictKey.exists(conflicts.contains))
+        }).flatMap { newAction =>
+          pick(newAction  :: existing)
+        }
+      }
+    }
+    pick(Nil)
   }
 
   def nextAction(random: Random, filter: Action => Boolean): Task[Action] = {

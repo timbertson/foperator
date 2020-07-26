@@ -44,5 +44,6 @@ lazy val sample = (project in file("sample"))
       "simple-mutator" -> "net.gfxmonk.foperator.sample.SimpleWithMutator",
       "advanced-mutator" -> "net.gfxmonk.foperator.sample.AdvancedWithMutator",
       "mutator-test" -> "net.gfxmonk.foperator.sample.MutatorTest",
+      "mutator-test-live" -> "net.gfxmonk.foperator.sample.MutatorTestLive",
     ),
   ).dependsOn(lib, testkit).enablePlugins(PackPlugin)
