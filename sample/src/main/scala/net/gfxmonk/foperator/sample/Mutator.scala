@@ -261,7 +261,6 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
 
   def stateValidator = {
     for {
-      // TODO check finalizing folks, too
       peopleMap <- people.all.map(dropNamespaceFromKey(_))
       greetingsMap <- greetings.all.map(dropNamespaceFromKey(_))
     } yield new StateValidator(peopleMap, greetingsMap)
