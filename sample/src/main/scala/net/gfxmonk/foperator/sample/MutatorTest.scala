@@ -9,7 +9,6 @@ import net.gfxmonk.foperator.ResourceState
 import net.gfxmonk.foperator.internal.Logging
 import net.gfxmonk.foperator.sample.Implicits._
 import net.gfxmonk.foperator.sample.Models._
-import net.gfxmonk.foperator.sample.MutatorTest.testSynthetic
 import net.gfxmonk.foperator.testkit.FoperatorDriver
 import skuber.{ListResource, ObjectResource}
 
@@ -25,7 +24,7 @@ object MutationTestCase {
   def withSeed(seed: Long) = base.withSeed(seed)
 }
 
-object MutatorLiveTest extends Logging {
+object MutatorTestLive extends Logging {
   def main(args: Array[String]): Unit = {
     val implicits = SchedulerImplicits.global
     args match {
@@ -172,29 +171,26 @@ object MutatorTest extends Logging {
       // The main risks are if:
       // - The initial tick isn't enough for our test infrastructure to see the update
       //   we just made
-      // - The state is inisially consistent, _but_ would get inconsistent if we waited
+      // - The state is initially consistent, _but_ would get inconsistent if we waited
       //   longer (this seems unlikely)
       // TODO: we could check the mirror state to see if the change we made has been reflected,
       //       which would protect against the first issue.
 
-      val tryValidate = for {
-        validator <- mutator.stateValidator
-        result <- assertValid(validator).materialize
-      } yield result
-
       val maxTicks = 100
 
       def tickLoop(remaining: Int): Task[Unit] = {
-        Task.sleep(20.millis) >>
+        Task.sleep(100.millis) >>
         Task(logger.info(s"Checking consistency... (remaining attempts: $remaining)")) >>
-        tryValidate.flatMap {
-          case Success(()) => Task.unit
-          case Failure(err) => {
-            if (remaining > 0) {
-              // not consistent yet, keep trying
-              tickLoop(remaining-1)
-            } else {
-              Task.raiseError(err)
+        mutator.stateValidator.flatMap { validator =>
+          validator.validate match {
+            case Validated.Valid(_) => Task.unit
+            case Validated.Invalid(_) => {
+              if (remaining > 0) {
+                // not consistent yet, keep trying
+                tickLoop(remaining-1)
+              } else {
+                assertValid(validator)
+              }
             }
           }
         }
@@ -222,10 +218,10 @@ object MutatorTest extends Logging {
         Task(logger.info("Loop completed successfully"))
       } else {
         (for {
-          // TODO implement maxActionsPerStep
-          action <- mutator.nextAction(rand, _ => true)
-          _ <- Task(logger.info(s"Running step #${stepNo} ${action} (params: $params.seed)"))
-          _ <- action.run
+          numConcurrent <- Task(rand.between(1, params.maxActionsPerStep+1))
+          actions <- mutator.nextActions(rand, numConcurrent, _ => true)
+          _ <- Task(logger.info(s"Running step #${stepNo} ${actions} (params: $params)"))
+          _ <- Task.gatherUnordered(actions.map(_.run)).void
           _ <- tickAndValidate
         } yield ()).flatMap(_ => loop(stepNo + 1))
       }

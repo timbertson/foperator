@@ -75,7 +75,7 @@ class StateValidator(people: Map[String, ResourceState[Person]], greetings: Map[
     }
   }
 
-  def validate = {
+  def validate: ValidatedNel[String, Unit] = {
     (greetings.values.toList.map { greeting =>
       validateResourceState(greeting, validateGreeting)
     } ++ people.values.toList.map { person =>
