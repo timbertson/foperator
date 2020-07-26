@@ -5,16 +5,16 @@ import monix.eval.Task
 import monix.execution.Scheduler
 import monix.execution.atomic.AtomicBoolean
 import monix.execution.schedulers.{CanBlock, TestScheduler, TrampolineExecutionContext}
-import net.gfxmonk.foperator.ResourceState
 import net.gfxmonk.foperator.internal.Logging
 import net.gfxmonk.foperator.sample.Implicits._
 import net.gfxmonk.foperator.sample.Models._
 import net.gfxmonk.foperator.testkit.FoperatorDriver
+import net.gfxmonk.foperator.{ResourceMirror, ResourceState}
 import skuber.{ListResource, ObjectResource}
 
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
-import scala.util.{Failure, Random, Success}
+import scala.util.Random
 
 case class MutationTestCase(seed: Long, steps: Int, maxActionsPerStep: Int) {
   def withSeed(newSeed: Long) = copy(seed = newSeed)
@@ -78,9 +78,6 @@ object MutatorTest extends Logging {
     val driver = new FoperatorDriver(testScheduler)
     implicit val client = driver.client
 
-    val greetings = driver.mirror[Greeting]()
-    val people = driver.mirror[Person]()
-
     val implicits = {
       // This is extremely silly: akka's logger setup synchronously blocks for the logger to (asynchronously)
       // respond that it's ready, but it can't because the scheduler's paused. So... we run it in a background
@@ -97,9 +94,7 @@ object MutatorTest extends Logging {
       result
     }
 
-    val mutator = new Mutator(client, greetings, people)
-
-    val checkMirrorContents: Task[Unit] = {
+    def checkMirrorContents(greetings: ResourceMirror[Greeting], people: ResourceMirror[Person]): Task[Unit] = {
       // To detect issues with the mirror machinery, this compares the mirror's
       // view of the world matches the state pulled directly from FoperatorDriver.
       def check[O<:ObjectResource](fromMirror: Iterable[ResourceState[O]], fromDriver: Iterable[ResourceState[O]]) = {
@@ -141,22 +136,27 @@ object MutatorTest extends Logging {
       tickLoop.executeOn(dedicatedThread).timeout(1.second)
     }
 
-    val tickAndValidate: Task[Unit] = for {
+    def tickAndValidate(mutator: Mutator, greetings: ResourceMirror[Greeting], people: ResourceMirror[Person]): Task[Unit] = for {
       _ <- Task(logger.info(s"Ticking..."))
       _ <- tick
       _ <- Task(logger.info(s"Checking consistency..."))
       validator <- mutator.stateValidator
-      _ <- checkMirrorContents
+      _ <- checkMirrorContents(greetings, people)
       _ <- assertValid(validator)
     } yield ()
 
-    // Start main eagerly, and make sure it lives on the testScheduler. Once started, tick() to ensure
-    // it's set up all its wachers etc
-    val main = new AdvancedOperator(implicits).runWith(greetings, people).runToFuture(testScheduler)
-    testScheduler.tick()
+    (for {
+      greetings <- driver.mirror[Greeting]()
+      people <- driver.mirror[Person]()
+      mutator = new Mutator(client, greetings, people)
 
-    runWithValidation(params, mutator, main = Task.fromFuture(main), tickAndValidate = tickAndValidate)
-      .runSyncUnsafe()(realScheduler, implicitly[CanBlock])
+      // Start main eagerly, and make sure it lives on the testScheduler. Once started, tick() to ensure
+      // it's set up all its wachers etc
+      main = new AdvancedOperator(implicits).runWith(greetings, people).runToFuture(testScheduler)
+      _ = testScheduler.tick()
+      _ <- runWithValidation(params, mutator, main = Task.fromFuture(main),
+        tickAndValidate = tickAndValidate(mutator, greetings, people))
+    } yield ()).runSyncUnsafe()(realScheduler, implicitly[CanBlock])
   }
 
   def testLive(params: MutationTestCase, implicits: SchedulerImplicits) = {

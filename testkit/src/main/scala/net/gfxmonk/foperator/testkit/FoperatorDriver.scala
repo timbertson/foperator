@@ -6,6 +6,7 @@ import java.util.concurrent.ConcurrentHashMap
 import akka.stream.scaladsl.{Sink, Source}
 import akka.util.ByteString
 import cats.implicits._
+import monix.eval.Task
 import monix.execution.{Ack, Cancelable, Scheduler}
 import monix.reactive.observers.Subscriber
 import monix.reactive.{MulticastStrategy, Observable}
@@ -25,7 +26,7 @@ import scala.util.{Failure, Success}
 class FoperatorDriver[T](userScheduler: Scheduler) {
   val client: FoperatorClient = new FoperatorClient(userScheduler)
 
-  def mirror[O<:ObjectResource]()(implicit rd: ResourceDefinition[O]): ResourceMirror[O] = {
+  def mirror[O<:ObjectResource]()(implicit rd: ResourceDefinition[O]): Task[ResourceMirror[O]] = {
     client.mirror[O]()
   }
 
@@ -50,7 +51,7 @@ class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Lo
   override val clusterServer: String = "localhost"
   override val namespaceName: String = "default"
 
-  private [testkit] def mirror[O<:ObjectResource]()(implicit rd: ResourceDefinition[O]): ResourceMirror[O] = {
+  private [testkit] def mirror[O<:ObjectResource]()(implicit rd: ResourceDefinition[O]): Task[ResourceMirror[O]] = {
     implicit val s: Scheduler = userScheduler
     val underlying = subject(rd)
     val sub = new Observable[WatchEvent[O]] {
@@ -63,7 +64,7 @@ class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Lo
         }
       }
     }
-    new ResourceMirrorImpl[O](Nil, sub)
+    ResourceMirrorImpl[O](Nil, sub)
   }
 
   private [testkit] def resourceSet[T<:ObjectResource](rd: ResourceDefinition[T]): ResourceSet[T] = {

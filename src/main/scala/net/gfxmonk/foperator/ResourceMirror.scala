@@ -10,6 +10,7 @@ import monix.execution.atomic.Atomic
 import monix.execution.{Ack, Cancelable, Scheduler}
 import monix.reactive.observers.Subscriber
 import monix.reactive.{Consumer, Observable}
+import net.gfxmonk.foperator.ResourceMirrorImpl.IdSubscriber
 import net.gfxmonk.foperator.internal.Logging
 import play.api.libs.json.Format
 import skuber.api.client.{EventType, KubernetesClient, LoggingContext, WatchEvent}
