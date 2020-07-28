@@ -18,7 +18,7 @@ import skuber.json.format.ListResourceFormat
 import skuber.{LabelSelector, ListOptions, ListResource, ObjectResource, ResourceDefinition}
 
 trait ResourceUpdates[T] {
-  def ids: Observable[Input[Id[T]]]
+  def ids: Observable[Event[Id[T]]]
 }
 
 trait ResourceMirror[T] extends ResourceUpdates[T] {
@@ -103,7 +103,7 @@ object ResourceMirror extends Logging {
 }
 
 object ResourceMirrorImpl {
-  private [foperator] type IdSubscriber[T] = Input[Id[T]] => Task[Unit]
+  private [foperator] type IdSubscriber[T] = Event[Id[T]] => Task[Unit]
 
   private [foperator] def mvar[T] = MVar[Task].of(Set.empty[IdSubscriber[T]])
 
@@ -153,11 +153,11 @@ private [foperator] class ResourceMirrorImpl[T<: ObjectResource](
 
       case EventType.DELETED => {
         state.transform(_.removed(id))
-        Some(Input.HardDeleted(id))
+        Some(Event.HardDeleted(id))
       }
       case EventType.ADDED | EventType.MODIFIED => {
         state.transform(_.updated(id, ResourceState.of(event._object)))
-        Some(Input.Updated(id))
+        Some(Event.Updated(id))
       }
     }
     input.map { input =>
@@ -168,12 +168,12 @@ private [foperator] class ResourceMirrorImpl[T<: ObjectResource](
     }.getOrElse(Task.unit)
   }).runToFuture
 
-  def ids: Observable[Input[Id[T]]] = {
-    new Observable[Input[Id[T]]] {
-      override def unsafeSubscribeFn(subscriber: Subscriber[Input[Id[T]]]): Cancelable = {
+  def ids: Observable[Event[Id[T]]] = {
+    new Observable[Event[Id[T]]] {
+      override def unsafeSubscribeFn(subscriber: Subscriber[Event[Id[T]]]): Cancelable = {
         val logId = s"[${logIdCommon}-${subscriber.hashCode}]"
         logger.trace(s"$logId Adding subscriber")
-        def emit(id: Input[Id[T]]): Task[Unit] = {
+        def emit(id: Event[Id[T]]): Task[Unit] = {
           Task.defer {
             logger.trace(s"$logId Emitting item $id")
             val future = subscriber.onNext(id)
@@ -200,7 +200,7 @@ private [foperator] class ResourceMirrorImpl[T<: ObjectResource](
           // concurrent updates are guaranteed to see the new subscriber
           listenerFns <- listeners.take
           _ <- Task(logger.trace("took listener mutex, emitting"))
-          _ <- state.get.keys.toList.traverse(id => emit(Input.Updated(id))).void
+          _ <- state.get.keys.toList.traverse(id => emit(Event.Updated(id))).void
           _ <- listeners.put(listenerFns + emit)
           _ <- Task(logger.trace("released listener mutex"))
           _ <- Task.never[Unit]
@@ -216,8 +216,8 @@ private [foperator] class ResourceMirrorImpl[T<: ObjectResource](
       Observable.from(obj.map(fn).getOrElse(Nil))
     }
     ids.map {
-      case Input.Updated(id) => Observable.fromTask(get(id)).concatMap(handle)
-      case Input.HardDeleted(_) => Observable.empty
+      case Event.Updated(id) => Observable.fromTask(get(id)).concatMap(handle)
+      case Event.HardDeleted(_) => Observable.empty
     }.concat
   }
 

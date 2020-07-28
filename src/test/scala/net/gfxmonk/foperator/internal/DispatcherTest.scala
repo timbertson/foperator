@@ -6,7 +6,7 @@ import monix.execution.schedulers.TestScheduler
 import monix.reactive.MulticastStrategy
 import monix.reactive.subjects.ConcurrentSubject
 import net.gfxmonk.foperator.fixture.{PermitScopeFixture, Resource}
-import net.gfxmonk.foperator.{Id, Input, Reconciler, ResourceState}
+import net.gfxmonk.foperator.{Id, Event, Reconciler, ResourceState}
 import org.scalatest.funspec.AnyFunSpec
 
 import scala.concurrent.duration._
@@ -23,7 +23,7 @@ class DispatcherTest extends AnyFunSpec {
   class Manager(scheduler: Scheduler) extends ResourceLoop.Manager[Loop, Resource] {
     private var nextId = 0
     var loops = List.empty[Loop[Resource]]
-    val inputs = ConcurrentSubject[Input[Id[Resource]]](MulticastStrategy.publish)(scheduler)
+    val inputs = ConcurrentSubject[Event[Id[Resource]]](MulticastStrategy.publish)(scheduler)
 
     val dispatcher = new Dispatcher[Loop, Resource](
       reconciler = Reconciler.empty,
@@ -63,17 +63,17 @@ class DispatcherTest extends AnyFunSpec {
     Task.raceMany(List(
       manager.dispatcher.run(manager.inputs).flatMap(_ => Task.raiseError(new AssertionError("should not complete"))).executeOn(testScheduler),
       Task {
-        manager.inputs.onNext(Input.Updated(id1))
+        manager.inputs.onNext(Event.Updated(id1))
         testScheduler.tick()
         assert(manager.loops.map(_.count) == List(1))
 
-        manager.inputs.onNext(Input.Updated(id2))
-        manager.inputs.onNext(Input.Updated(id1))
+        manager.inputs.onNext(Event.Updated(id2))
+        manager.inputs.onNext(Event.Updated(id1))
         testScheduler.tick()
 
         assert(manager.loops.map(_.count) == List(2,1))
 
-        manager.inputs.onNext(Input.HardDeleted(id2))
+        manager.inputs.onNext(Event.HardDeleted(id2))
         testScheduler.tick()
 
         assert(manager.loops.map(_.count) == List(2))
@@ -88,7 +88,7 @@ class DispatcherTest extends AnyFunSpec {
     Task.race(
       manager.dispatcher.run(manager.inputs).attempt,
       Task.defer {
-        manager.inputs.onNext(Input.Updated(id1))
+        manager.inputs.onNext(Event.Updated(id1))
         manager.loops.head.onError(error)
         Task.sleep(1.second)
       }

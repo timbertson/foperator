@@ -352,8 +352,8 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
     val logId = s"${rd.spec.names.kind}"
     mirror.all.map(_.size).flatMap { initialItems =>
       mirror.ids.drop(initialItems).map {
-        case Input.HardDeleted(id) => id
-        case Input.Updated(id) => id
+        case Event.HardDeleted(id) => id
+        case Event.Updated(id) => id
       }.mapEval { id =>
         mirror.all.flatMap { all =>
           val desc = all.get(id) match {
