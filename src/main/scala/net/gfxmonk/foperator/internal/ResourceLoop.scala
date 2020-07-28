@@ -1,11 +1,7 @@
 package net.gfxmonk.foperator.internal
 
-import java.util.concurrent.TimeUnit
-
-import cats.effect.ExitCase
 import monix.eval.Task
 import monix.execution.{Cancelable, Scheduler}
-import net.gfxmonk.foperator.internal.Dispatcher.PermitScope
 import net.gfxmonk.foperator.internal.ResourceLoop.ErrorCount
 import net.gfxmonk.foperator.{ReconcileResult, Reconciler, ResourceState}
 
@@ -14,10 +10,10 @@ import scala.concurrent.duration._
 import scala.util.{Failure, Success}
 
 object ResourceLoop {
-  trait Manager[Loop[_]] {
-    def create[T](currentState: Task[Option[ResourceState[T]]], reconciler: Reconciler[ResourceState[T]], permitScope: PermitScope, onError: Throwable => Task[Unit]): Loop[T]
-    def update[T](loop: Loop[T]): Task[Unit]
-    def destroy[T](loop: Loop[T]): Task[Unit]
+  trait Manager[Loop[_], T] {
+    def create(currentState: Task[Option[ResourceState[T]]], reconciler: Reconciler[ResourceState[T]], permitScope: PermitScope, onError: Throwable => Task[Unit]): Loop[T]
+    def update(loop: Loop[T]): Task[Unit]
+    def destroy(loop: Loop[T]): Task[Unit]
   }
 
   case class ErrorCount(value: Int) extends AnyVal {
@@ -28,17 +24,17 @@ object ResourceLoop {
     def zero = ErrorCount(0)
   }
 
-  def manager[T<:AnyRef](refreshInterval: Option[FiniteDuration])(implicit scheduler: Scheduler): Manager[ResourceLoop] =
-    new Manager[ResourceLoop] {
-      override def create[T]( currentState: Task[Option[ResourceState[T]]],
+  def manager[T<:AnyRef](refreshInterval: Option[FiniteDuration])(implicit scheduler: Scheduler): Manager[ResourceLoop, T] =
+    new Manager[ResourceLoop, T] {
+      override def create( currentState: Task[Option[ResourceState[T]]],
                               reconciler: Reconciler[ResourceState[T]],
                               permitScope: PermitScope,
                               onError: Throwable => Task[Unit]): ResourceLoop[T] = {
         def backoffTime(errorCount: ErrorCount) = Math.pow(1.2, errorCount.value.toDouble).seconds
         new ResourceLoop[T](currentState, reconciler, refreshInterval, permitScope, backoffTime, onError)
       }
-      override def update[T](loop: ResourceLoop[T]): Task[Unit] = loop.update
-      override def destroy[T](loop: ResourceLoop[T]): Task[Unit] = Task(loop.cancel())
+      override def update(loop: ResourceLoop[T]): Task[Unit] = loop.update
+      override def destroy(loop: ResourceLoop[T]): Task[Unit] = Task(loop.cancel())
     }
 }
 

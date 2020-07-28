@@ -10,10 +10,6 @@ import skuber.ObjectResource
 import scala.concurrent.Promise
 
 object Dispatcher {
-  trait PermitScope {
-    def withPermit[A](task: Task[A]): Task[A]
-  }
-
   def apply[T<:ObjectResource](operator: Operator[T], input: ControllerInput[T])(implicit scheduler: Scheduler): Task[Dispatcher[ResourceLoop,T]] = {
     val reconciler = Finalizer.reconciler(operator.finalizer, operator.reconciler)
     val manager = ResourceLoop.manager[T](operator.refreshInterval)
@@ -31,8 +27,8 @@ object Dispatcher {
 class Dispatcher[Loop[_], T<:ObjectResource](
   reconciler: Reconciler[ResourceState[T]],
   getResource: Id[T] => Task[Option[ResourceState[T]]],
-  manager: ResourceLoop.Manager[Loop],
-  permitScope: Dispatcher.PermitScope
+  manager: ResourceLoop.Manager[Loop, T],
+  permitScope: PermitScope
 ) extends Logging {
   private val error = Promise[Unit]()
   private def onError(throwable: Throwable) = Task { error.tryFailure(throwable) }.void
@@ -57,7 +53,7 @@ class Dispatcher[Loop[_], T<:ObjectResource](
             }
             case None => {
               logger.trace(s"Creating resource loop for ${id}")
-              val loop = manager.create[T](getResource(id), reconciler, permitScope, onError)
+              val loop = manager.create(getResource(id), reconciler, permitScope, onError)
               (map.updated(id, loop), Task.unit)
             }
           }

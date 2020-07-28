@@ -3,7 +3,6 @@ package net.gfxmonk.foperator.internal
 import cats.effect.ExitCase
 import monix.eval.Task
 import monix.execution.schedulers.TestScheduler
-import net.gfxmonk.foperator.internal.Dispatcher.PermitScope
 import net.gfxmonk.foperator.internal.ResourceLoop.ErrorCount
 import net.gfxmonk.foperator.{ReconcileResult, Reconciler, ResourceState}
 
