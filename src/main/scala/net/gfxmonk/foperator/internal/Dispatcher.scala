@@ -15,10 +15,7 @@ object Dispatcher {
     val manager = ResourceLoop.manager[T](operator.refreshInterval)
 
     Semaphore[Task](operator.concurrency.toLong).map { semaphore =>
-      val permitScope = new PermitScope {
-        override def withPermit[A](task: Task[A]): Task[A] = semaphore.withPermit(task)
-      }
-      new Dispatcher[ResourceLoop, T](reconciler, input.get, manager, permitScope)
+      new Dispatcher[ResourceLoop, T](reconciler, input.get, manager, PermitScope.semaphore(semaphore))
     }
   }
 }
@@ -33,19 +30,19 @@ class Dispatcher[Loop[_], T<:ObjectResource](
   private val error = Promise[Unit]()
   private def onError(throwable: Throwable) = Task { error.tryFailure(throwable) }.void
 
-  def run(input: Observable[Input[Id[T]]]): Task[Unit] = {
+  def run(input: Observable[Event[Id[T]]]): Task[Unit] = {
     Task.race(Task.fromFuture(error.future), runloop(input)).void
   }
 
-  private def runloop(input: Observable[Input[Id[T]]]): Task[Unit] = {
+  private def runloop(input: Observable[Event[Id[T]]]): Task[Unit] = {
     Task(logger.trace("Starting runloop")) >>
     input.mapAccumulate(Map.empty[Id[T],Loop[T]]) { (map:Map[Id[T],Loop[T]], input) =>
       val result: (Map[Id[T],Loop[T]], Task[Unit]) = input match {
-        case Input.HardDeleted(id) => {
+        case Event.HardDeleted(id) => {
           logger.trace(s"Removing resource loop for ${id}")
           (map - id, map.get(id).map(manager.destroy).getOrElse(Task.unit))
         }
-        case Input.Updated(id) => {
+        case Event.Updated(id) => {
           map.get(id) match {
             case Some(loop) => {
               logger.trace(s"Triggering update for ${id}")

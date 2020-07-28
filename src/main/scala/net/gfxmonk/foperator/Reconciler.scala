@@ -2,12 +2,11 @@ package net.gfxmonk.foperator
 
 import cats.Eq
 import monix.eval.Task
+import net.gfxmonk.foperator.implicits._
+import net.gfxmonk.foperator.internal.Logging
 import play.api.libs.json.Format
 import skuber.api.client.KubernetesClient
 import skuber.{CustomResource, HasStatusSubresource, ResourceDefinition}
-import cats.implicits._
-import implicits._
-import net.gfxmonk.foperator.internal.Logging
 
 import scala.concurrent.duration.FiniteDuration
 

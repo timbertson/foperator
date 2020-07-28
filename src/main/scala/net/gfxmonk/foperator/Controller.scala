@@ -15,5 +15,5 @@ case class Operator[T](
                       )
 
 class Controller[T<:ObjectResource](operator: Operator[T], input: ControllerInput[T])(implicit scheduler: Scheduler) {
-  def run: Task[Unit] = Dispatcher[T](operator, input).flatMap(_.run(input.inputs))
+  def run: Task[Unit] = Dispatcher[T](operator, input).flatMap(_.run(input.events))
 }
