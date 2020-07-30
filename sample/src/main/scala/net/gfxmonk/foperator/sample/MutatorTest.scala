@@ -75,7 +75,7 @@ object MutatorTest extends Logging {
 
     val testScheduler = TestScheduler()
 
-    val driver = new FoperatorDriver(testScheduler)
+    val driver = FoperatorDriver(testScheduler)
     implicit val client = driver.client
 
     val implicits = {

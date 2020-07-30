@@ -3,16 +3,18 @@ package net.gfxmonk.foperator.testkit
 import java.time.{Clock, ZonedDateTime}
 import java.util.concurrent.ConcurrentHashMap
 
+import akka.NotUsed
+import akka.stream.{ActorMaterializer, Materializer, OverflowStrategy}
 import akka.stream.scaladsl.{Sink, Source}
 import akka.util.ByteString
 import cats.implicits._
 import monix.eval.Task
 import monix.execution.{Ack, Cancelable, Scheduler}
 import monix.reactive.observers.Subscriber
-import monix.reactive.{MulticastStrategy, Observable}
 import monix.reactive.subjects.ConcurrentSubject
+import monix.reactive.{MulticastStrategy, Observable}
 import net.gfxmonk.foperator.internal.Logging
-import net.gfxmonk.foperator.{Id, ResourceMirror, ResourceMirrorImpl, ResourceState}
+import net.gfxmonk.foperator.{FoperatorContext, Id, ResourceMirror, ResourceMirrorImpl, ResourceState}
 import play.api.libs.json.{Format, JsArray, Writes}
 import skuber.api.client
 import skuber.api.client.{EventType, KubernetesClient, LoggingConfig, WatchEvent}
@@ -21,10 +23,16 @@ import skuber.{CustomResource, K8SException, LabelSelector, ObjectResource, Pod,
 
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.jdk.CollectionConverters._
-import scala.util.{Failure, Success}
+import scala.util.{Failure, Success, Try}
 
 class FoperatorDriver[T](userScheduler: Scheduler) {
-  val client: FoperatorClient = new FoperatorClient(userScheduler)
+  private val actorSystem = FoperatorContext.actorSystem(userScheduler)
+
+  private val mat = ActorMaterializer()(actorSystem)
+
+  val client: FoperatorClient = new FoperatorClient(userScheduler, mat)
+
+  val context: FoperatorContext = FoperatorContext(userScheduler, client=Some(client))
 
   def mirror[O<:ObjectResource]()(implicit rd: ResourceDefinition[O]): Task[ResourceMirror[O]] = {
     client.mirror[O]()
@@ -33,6 +41,14 @@ class FoperatorDriver[T](userScheduler: Scheduler) {
   def list[O<:ObjectResource](implicit rd: ResourceDefinition[O]): Iterable[ResourceState[O]] = {
     client.resourceSet(rd).values.asScala.map(ResourceState.of)
   }
+
+  def subject[O<:ObjectResource](implicit rd: ResourceDefinition[O]): ConcurrentSubject[WatchEvent[O],WatchEvent[O]] = {
+    client.subject(rd)
+  }
+}
+
+object FoperatorDriver {
+  def apply(userScheduler: Scheduler) = new FoperatorDriver(userScheduler)
 }
 
 object FoperatorClient {
@@ -40,7 +56,8 @@ object FoperatorClient {
   type ResourceSet[T] = ConcurrentHashMap[Id[T], T]
 }
 
-class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Logging {
+// Just enough skuber to satisfy the needs of a typical foperator usage
+class FoperatorClient(userScheduler: Scheduler, materializer: Materializer) extends KubernetesClient with Logging {
   import FoperatorClient._
   private val state: ResourceMap[ResourceSet[_]] = new ConcurrentHashMap[ResourceDefinition[_], ResourceSet[_]]()
   private val subjects: ResourceMap[ConcurrentSubject[_,_]] = new ConcurrentHashMap[ResourceDefinition[_], ConcurrentSubject[_,_]]()
@@ -73,7 +90,7 @@ class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Lo
     (state.get(rd): ResourceSet[_]).asInstanceOf[ResourceSet[T]]
   }
 
-  private def subject[O<: ObjectResource](rd: ResourceDefinition[O]): ConcurrentSubject[WatchEvent[O],WatchEvent[O]] = {
+  private [testkit] def subject[O<: ObjectResource](rd: ResourceDefinition[O]): ConcurrentSubject[WatchEvent[O],WatchEvent[O]] = {
     subjects.computeIfAbsent(rd, _ => {
       logger.trace(s"Creating ConcurrentSubject for ${rd.spec.names.kind}")
       ConcurrentSubject(MulticastStrategy.replayLimited(10))(userScheduler)
@@ -116,26 +133,6 @@ class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Lo
     requireOpt(getId(Id.createUnsafe[O](namespace, name)))
 
   private def bumpResourceVersion[O <: skuber.ObjectResource](obj: O): O = {
-//    val json = fmt.writes(obj)
-////    println(s"Serialized: $json")
-//
-//    import play.api.libs.json._
-//    val munge: Reads[JsObject] = new Reads[JsObject] {
-//      override def reads(json: JsValue): JsResult[JsObject] = {
-//        // This is probably a terrible way to do it but oh well
-//        for {
-//          js <- json.validate[JsObject]
-//          meta <- (js \ "metadata").validate[JsObject]
-//          version <- (js \ "resourceVersion").getOrElse(JsString("0")).validate[JsString]
-//          newVersion = JsString(s"${Integer.parseInt(version.value)+1}")
-//          newMeta = meta + ("resourceVersion" -> newVersion)
-//        } yield (js + ("metadata" -> newMeta))
-//      }
-//    }
-//    val updated = json.transform(munge)
-////    println(s"Updated: ${updated}")
-//    fmt.reads(updated.get).get
-
     val cr = obj.asInstanceOf[CustomResource[_,_]]
     val meta = obj.metadata
     val version = if (meta.resourceVersion == "") 0 else Integer.parseInt(meta.resourceVersion)
@@ -152,21 +149,6 @@ class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Lo
     cr.withMetadata(
       meta.copy(deletionTimestamp = Some(meta.deletionTimestamp.getOrElse(ZonedDateTime.now(Clock.systemUTC()))))
     ).asInstanceOf[O]
-//
-//    val json = fmt.writes(obj)
-//    import play.api.libs.json._
-//    val munge: Reads[JsObject] = new Reads[JsObject] {
-//      override def reads(json: JsValue): JsResult[JsObject] = {
-//        // This is probably a terrible way to do it but oh well
-//        for {
-//          js <- json.validate[JsObject]
-//          meta <- (js \ "metadata").validate[JsObject]
-//          deletion <- (js \ "deletionTimestamp").getOrElse(JsString("2020-01-01T00:00:00Z")).validate[JsString]
-//          newMeta = meta + ("deletionTimestamp" -> deletion)
-//        } yield (js + ("metadata" -> newMeta))
-//      }
-//    }
-//    json.transform(munge).flatMap(fmt.reads).get
   }
 
   private def startDeletion[O <: skuber.ObjectResource](obj: O): Option[O] = {
@@ -286,8 +268,8 @@ class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Lo
   override def watchAllContinuously[O <: skuber.ObjectResource](sinceResourceVersion: Option[String], bufSize: Int)(implicit fmt: Format[O], rd: ResourceDefinition[O], lc: client.LoggingContext): Source[WatchEvent[O], _] = ???
 
   override def watchWithOptions[O <: skuber.ObjectResource](options: skuber.ListOptions, bufsize: Int)(implicit fmt: Format[O], rd: ResourceDefinition[O], lc: client.LoggingContext): Source[WatchEvent[O], _] = {
-    ???
-//    Source.fromPublisher(subject(rd).toReactivePublisher(userScheduler))
+    // TODO care about options
+    Source.fromPublisher(subject(rd).toReactivePublisher(userScheduler))
   }
 
   override def getScale[O <: skuber.ObjectResource](objName: String)(implicit rd: ResourceDefinition[O], sc: Scale.SubresourceSpec[O], lc: client.LoggingContext): Future[Scale] = ???

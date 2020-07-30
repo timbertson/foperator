@@ -1,7 +1,11 @@
 package net.gfxmonk.foperator
 
+import akka.actor.ActorSystem
+import akka.stream.ActorMaterializer
 import cats.Eq
 import cats.implicits._
+import monix.execution.Scheduler
+import skuber.api.client.{KubernetesClient, LoggingContext}
 import skuber.{CustomResource, ObjectMeta, ObjectResource}
 
 package object implicits {
@@ -31,4 +35,12 @@ package object implicits {
       }
     }
   }
+
+  implicit def actorSystemFromContext(implicit context: FoperatorContext): ActorSystem = context.actorSystem
+
+  implicit def materializerFromContext(implicit context: FoperatorContext): ActorMaterializer = context.materializer
+
+  implicit def k8sClientFromContext(implicit context: FoperatorContext): KubernetesClient = context.client
+
+  implicit def schedulerFromContext(implicit context: FoperatorContext): Scheduler = context.scheduler
 }

@@ -63,7 +63,7 @@ class ResourceLoop[T](
     logger.trace(s"$logId reset `modified` to fresh promise")
   }
 
-  private val cancelable = reconcileNow(ErrorCount.zero).onErrorHandleWith(onError).runToFuture
+  private val cancelable = reconcileLoop(ErrorCount.zero).onErrorHandleWith(onError).runToFuture
 
   override def cancel(): Unit = cancelable.cancel()
 
@@ -74,21 +74,23 @@ class ResourceLoop[T](
     }
   }
 
-  private def reconcileNow(errorCount: ErrorCount): Task[Unit] = {
+  private def reconcileLoop(errorCount: ErrorCount): Task[Unit] = {
     val runReconcile = resetPromise >> currentState.flatMap {
-      case None => {
-        logger.trace(s"$logId no longer present, skipping reconcile")
-        Task.pure(Success(ReconcileResult.Ok))
-      }
+      case None => Task.pure(Success(None))
       case Some(obj) => {
         logger.trace(s"$logId performing reconcile")
-        reconciler.reconcile(obj).materialize
+        reconciler.reconcile(obj).materialize.map(Some.apply)
       }
     }
 
     Task(logger.trace(s"$logId Acquiring permit")) >>
     permitScope.withPermit(runReconcile).flatMap {
-      case Success(result) => {
+      case None => {
+        logger.trace(s"$logId no longer present, stopping reconcile")
+        Task.unit
+      }
+
+      case Some(Success(result)) => {
         val delay = result match {
           case ReconcileResult.RetryAfter(delay) => Some(delay)
           case _ => refreshInterval
@@ -98,7 +100,7 @@ class ResourceLoop[T](
         scheduleReconcile(ErrorCount.zero, delay)
       }
 
-      case Failure(error) => {
+      case Some(Failure(error)) => {
         val nextCount = errorCount.increment
         val errorDelay = backoffTime(nextCount)
         val delay = refreshInterval.fold(errorDelay)(errorDelay.min)
@@ -115,6 +117,6 @@ class ResourceLoop[T](
     ).map {
       case Right(errorCount) => errorCount
       case Left(()) => ErrorCount.zero
-    }.flatMap(reconcileNow)
+    }.flatMap(reconcileLoop)
   }
 }
