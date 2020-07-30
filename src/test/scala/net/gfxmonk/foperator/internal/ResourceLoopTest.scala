@@ -1,7 +1,10 @@
 package net.gfxmonk.foperator.internal
 
+import java.util.concurrent.atomic.AtomicReference
+
 import cats.effect.ExitCase
 import monix.eval.Task
+import monix.execution.ExecutionModel
 import monix.execution.schedulers.TestScheduler
 import net.gfxmonk.foperator.internal.ResourceLoop.ErrorCount
 import net.gfxmonk.foperator.{ReconcileResult, Reconciler, ResourceState}
@@ -10,7 +13,7 @@ import scala.collection.mutable.ListBuffer
 import scala.concurrent.duration._
 
 class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec with Logging {
-  implicit val scheduler = TestScheduler()
+  implicit var scheduler = TestScheduler(ExecutionModel.AlwaysAsyncExecution)
 
   class Context(initial: String, delegate: (Int, ResourceState[String]) => Task[ReconcileResult]) {
     val reconcileDuration = 1.second
@@ -56,8 +59,10 @@ class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec with Logging {
       backoffTime
     }
 
+    var resourceRef = new AtomicReference(Option(ResourceState.Active(initial)))
+
     val loop = new ResourceLoop(
-      Task.pure(Some(ResourceState.Active(initial))),
+      Task { resourceRef.get }.asyncBoundary,
       reconciler,
       Some(refreshInterval),
       permitScope,
@@ -90,8 +95,12 @@ class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec with Logging {
     }
   }
 
-  it("skips reconcile when the item has diasappeared") {
-    // TODO set to None
+  it("stops reconciling if item disappears") {
+    withContext("initial") { ctx =>
+      ctx.resourceRef.set(None)
+      scheduler.tick((ctx.refreshInterval + ctx.reconcileDuration) * 10)
+      assert(ctx.log == List("acquire", "release"))
+    }
   }
 
   it("is cancelable") {

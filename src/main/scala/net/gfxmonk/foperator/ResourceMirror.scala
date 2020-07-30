@@ -128,11 +128,6 @@ private [foperator] class ResourceMirrorImpl[T<: ObjectResource](
   import ResourceMirrorImpl._
   private val state = Atomic(initial.map(obj => Id.of(obj) -> ResourceState.of(obj)).toMap)
   private val logIdCommon = s"${rd.spec.names.kind}-${this.hashCode}"
-  if(logger.isTraceEnabled) {
-    state.get.values.foreach { res =>
-      logger.trace(s"[$logIdCommon initial] ${res}")
-    }
-  }
 
   private def transformSubscribers(fn: Set[IdSubscriber[T]] => Set[IdSubscriber[T]]): Task[Unit] = {
     listeners.take.flatMap(subs => listeners.put(fn(subs)))
@@ -140,11 +135,7 @@ private [foperator] class ResourceMirrorImpl[T<: ObjectResource](
 
   private [foperator] val future = updates.consumeWith(Consumer.foreachEval { (event:WatchEvent[T]) =>
     val id = Id.of(event._object)
-    if (logger.isTraceEnabled) {
-      logger.trace(s"[${logIdCommon}] Saw event ${event._type} on ${id}, object = ${event._object}")
-    } else {
-      logger.debug(s"[${logIdCommon}] Saw event ${event._type} on ${id}")
-    }
+    logger.debug(s"[${logIdCommon}] Saw event ${event._type} on ${id}")
     val input = event._type match {
       case EventType.ERROR =>
         logger.error(s"Error event in kubernetes watch: ${event}")
@@ -199,10 +190,8 @@ private [foperator] class ResourceMirrorImpl[T<: ObjectResource](
           // take listeners mutex while sending initial set, so that
           // concurrent updates are guaranteed to see the new subscriber
           listenerFns <- listeners.take
-          _ <- Task(logger.trace("took listener mutex, emitting"))
           _ <- state.get.keys.toList.traverse(id => emit(Event.Updated(id))).void
           _ <- listeners.put(listenerFns + emit)
-          _ <- Task(logger.trace("released listener mutex"))
           _ <- Task.never[Unit]
         } yield ())
           .doOnCancel(cancel)

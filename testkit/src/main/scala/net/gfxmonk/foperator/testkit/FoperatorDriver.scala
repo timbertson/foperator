@@ -40,6 +40,7 @@ object FoperatorClient {
   type ResourceSet[T] = ConcurrentHashMap[Id[T], T]
 }
 
+// Just enough skuber to satisfy the needs of a typical foperator usage
 class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Logging {
   import FoperatorClient._
   private val state: ResourceMap[ResourceSet[_]] = new ConcurrentHashMap[ResourceDefinition[_], ResourceSet[_]]()
@@ -116,26 +117,6 @@ class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Lo
     requireOpt(getId(Id.createUnsafe[O](namespace, name)))
 
   private def bumpResourceVersion[O <: skuber.ObjectResource](obj: O): O = {
-//    val json = fmt.writes(obj)
-////    println(s"Serialized: $json")
-//
-//    import play.api.libs.json._
-//    val munge: Reads[JsObject] = new Reads[JsObject] {
-//      override def reads(json: JsValue): JsResult[JsObject] = {
-//        // This is probably a terrible way to do it but oh well
-//        for {
-//          js <- json.validate[JsObject]
-//          meta <- (js \ "metadata").validate[JsObject]
-//          version <- (js \ "resourceVersion").getOrElse(JsString("0")).validate[JsString]
-//          newVersion = JsString(s"${Integer.parseInt(version.value)+1}")
-//          newMeta = meta + ("resourceVersion" -> newVersion)
-//        } yield (js + ("metadata" -> newMeta))
-//      }
-//    }
-//    val updated = json.transform(munge)
-////    println(s"Updated: ${updated}")
-//    fmt.reads(updated.get).get
-
     val cr = obj.asInstanceOf[CustomResource[_,_]]
     val meta = obj.metadata
     val version = if (meta.resourceVersion == "") 0 else Integer.parseInt(meta.resourceVersion)
@@ -152,21 +133,6 @@ class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Lo
     cr.withMetadata(
       meta.copy(deletionTimestamp = Some(meta.deletionTimestamp.getOrElse(ZonedDateTime.now(Clock.systemUTC()))))
     ).asInstanceOf[O]
-//
-//    val json = fmt.writes(obj)
-//    import play.api.libs.json._
-//    val munge: Reads[JsObject] = new Reads[JsObject] {
-//      override def reads(json: JsValue): JsResult[JsObject] = {
-//        // This is probably a terrible way to do it but oh well
-//        for {
-//          js <- json.validate[JsObject]
-//          meta <- (js \ "metadata").validate[JsObject]
-//          deletion <- (js \ "deletionTimestamp").getOrElse(JsString("2020-01-01T00:00:00Z")).validate[JsString]
-//          newMeta = meta + ("deletionTimestamp" -> deletion)
-//        } yield (js + ("metadata" -> newMeta))
-//      }
-//    }
-//    json.transform(munge).flatMap(fmt.reads).get
   }
 
   private def startDeletion[O <: skuber.ObjectResource](obj: O): Option[O] = {
@@ -287,7 +253,6 @@ class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Lo
 
   override def watchWithOptions[O <: skuber.ObjectResource](options: skuber.ListOptions, bufsize: Int)(implicit fmt: Format[O], rd: ResourceDefinition[O], lc: client.LoggingContext): Source[WatchEvent[O], _] = {
     ???
-//    Source.fromPublisher(subject(rd).toReactivePublisher(userScheduler))
   }
 
   override def getScale[O <: skuber.ObjectResource](objName: String)(implicit rd: ResourceDefinition[O], sc: Scale.SubresourceSpec[O], lc: client.LoggingContext): Future[Scale] = ???
