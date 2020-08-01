@@ -1,6 +1,6 @@
 package net.gfxmonk.foperator
 
-import akka.stream.ActorMaterializer
+import akka.stream.Materializer
 import akka.stream.scaladsl.Sink
 import cats.effect.Resource
 import cats.implicits._
@@ -49,22 +49,22 @@ object ResourceMirror extends Logging {
   }
 
   def all[T<: ObjectResource](
-    implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext, materializer: ActorMaterializer,
+    implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext, materializer: Materializer,
     client: KubernetesClient
   ): Builder[T] = providerImpl(ListOptions())
 
   def forSelector[T<: ObjectResource](labelSelector: LabelSelector)(
-    implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext, materializer: ActorMaterializer,
+    implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext, materializer: Materializer,
     client: KubernetesClient
   ): Builder[T] = providerImpl(ListOptions(labelSelector = Some(labelSelector)))
 
   def forOptions[T<: ObjectResource](listOptions: ListOptions)(
-    implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext, materializer: ActorMaterializer,
+    implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext, materializer: Materializer,
     client: KubernetesClient
   ): Builder[T] = providerImpl(listOptions)
 
   private def providerImpl[T<: ObjectResource](listOptions: ListOptions)(
-    implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext, materializer: ActorMaterializer,
+    implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext, materializer: Materializer,
     client: KubernetesClient
   ): Builder[T] = new Builder[T] {
     override def use[R](consume: ResourceMirror[T] => Task[R]): Task[R] = {
@@ -80,7 +80,7 @@ object ResourceMirror extends Logging {
   }
 
   private def resource[T<: ObjectResource](listOptions: ListOptions)(
-    implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext, materializer: ActorMaterializer,
+    implicit fmt: Format[T], rd: ResourceDefinition[T], lc: LoggingContext, materializer: Materializer,
     client: KubernetesClient
   ): Resource[Task,ResourceMirrorImpl[T]] = {
     Resource.fromAutoCloseable[Task, ResourceMirrorImpl[T]] {

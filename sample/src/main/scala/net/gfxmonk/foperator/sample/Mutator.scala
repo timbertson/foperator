@@ -2,7 +2,7 @@ package net.gfxmonk.foperator.sample
 
 import java.util.concurrent.TimeUnit
 
-import akka.stream.ActorMaterializer
+import akka.stream.Materializer
 import cats.Eq
 import cats.effect.ExitCode
 import cats.implicits._
@@ -166,7 +166,7 @@ object Mutator extends Logging {
 
   // Since we want to share one mirror globally, we use this as the toplevel hook, and run
   // all mutators / operators within the `op`
-  def withResourceMirrors(client: KubernetesClient)(op: (ResourceMirror[Greeting], ResourceMirror[Person]) => Task[Unit])(implicit mat: ActorMaterializer): Task[Unit] = {
+  def withResourceMirrors(client: KubernetesClient)(op: (ResourceMirror[Greeting], ResourceMirror[Person]) => Task[Unit])(implicit mat: Materializer): Task[Unit] = {
     implicit val _client = client
     Task(logger.info("Loading ... ")) >>
       ResourceMirror.all[Greeting].use { greetings =>
