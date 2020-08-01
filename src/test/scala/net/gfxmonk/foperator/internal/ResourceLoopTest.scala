@@ -16,6 +16,8 @@ class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec with Logging {
   implicit var scheduler = TestScheduler(ExecutionModel.AlwaysAsyncExecution)
 
   class Context(initial: String, delegate: (Int, ResourceState[String]) => Task[ReconcileResult]) {
+    val jiffy = 0.1.second
+    val halfReconcileDuration = 0.5.second
     val reconcileDuration = 1.second
     val refreshInterval = 5.seconds
 
@@ -107,6 +109,7 @@ class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec with Logging {
     withContext("initial") { ctx =>
       scheduler.tick(ctx.reconcileDuration/2)
       ctx.loop.cancel()
+      scheduler.tick()
       assert(ctx.log == reconcileStart ++ List("cancel"))
       scheduler.tick(ctx.refreshInterval * 10)
       // nothing further should happen
@@ -132,7 +135,25 @@ class ResourceLoopTest extends org.scalatest.funspec.AnyFunSpec with Logging {
   }
 
   describe("updating") {
-    it("reconciles immediately after a current reconcile") {}
-    it("reconciles immediately if waiting") {}
+    it("causes a new reconcile to start after the current reconcile") {
+      withContext("initial") { ctx =>
+        scheduler.tick(ctx.halfReconcileDuration + ctx.jiffy)
+        ctx.loop.update.runAsyncAndForget(scheduler)
+        scheduler.tick()
+        assert(ctx.log == reconcileStart)
+        scheduler.tick(ctx.halfReconcileDuration + ctx.jiffy)
+        assert(ctx.log == reconcileFull ++ reconcileStart)
+      }
+    }
+
+    it("reconciles immediately if sleeping") {
+      withContext("initial") { ctx =>
+        scheduler.tick(ctx.reconcileDuration + ctx.jiffy)
+        assert(ctx.log == reconcileFull)
+        ctx.loop.update.runAsyncAndForget(scheduler)
+        scheduler.tick()
+        assert(ctx.log == reconcileFull ++ reconcileStart)
+      }
+    }
   }
 }
