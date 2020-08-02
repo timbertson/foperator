@@ -13,7 +13,7 @@ import scala.util.Try
 
 object AdvancedMain {
   def main(args: Array[String]): Unit = {
-    new AdvancedOperator(SchedulerImplicits.global).main(args)
+    new AdvancedOperator(FoperatorContext.global).main(args)
   }
 }
 
@@ -21,12 +21,10 @@ object AdvancedOperator {
   val finalizerName = s"AdvancedMain.${Models.greetingSpec.apiGroup}"
 }
 
-class AdvancedOperator(implicits: SchedulerImplicits) extends TaskApp with Logging {
+class AdvancedOperator(ctx: FoperatorContext) extends TaskApp with Logging {
   import AdvancedOperator._
   import Models._
-  implicit val _scheduler = implicits.scheduler
-  implicit val client = implicits.k8sClient
-  implicit val materializer = implicits.materializer
+  implicit val _ctxImplicit: FoperatorContext = ctx
 
   override def run(args: List[String]): Task[ExitCode] = {
     install() >> ResourceMirror.all[Greeting].use { greetings =>
@@ -44,7 +42,7 @@ class AdvancedOperator(implicits: SchedulerImplicits) extends TaskApp with Loggi
   }
 
   def install() = {
-    (new SimpleOperator(implicits)).install() >>
+    (new SimpleOperator(ctx)).install() >>
       Operations.write[CustomResourceDefinition]((res, meta) => res.copy(metadata = meta))(personCrd).void
   }
 

@@ -9,7 +9,7 @@ import skuber.apiextensions.CustomResourceDefinition
 
 object SimpleMain {
   def main(args: Array[String]): Unit = {
-    new SimpleOperator(SchedulerImplicits.global).main(args)
+    new SimpleOperator(FoperatorContext.global).main(args)
   }
 }
 
@@ -18,11 +18,9 @@ object SimpleOperator {
     GreetingStatus(s"hello, ${greeting.spec.name.getOrElse("UNKNOWN")}", people = Nil)
 }
 
-class SimpleOperator(implicits: SchedulerImplicits) extends TaskApp {
+class SimpleOperator(ctx: FoperatorContext) extends TaskApp {
   import Models._
-  implicit val _scheduler = implicits.scheduler
-  implicit val client = implicits.k8sClient
-  implicit val materializer = implicits.materializer
+  implicit val _ctxImplicit = ctx
 
   def install() = {
     Operations.write[CustomResourceDefinition]((res, meta) => res.copy(metadata=meta))(greetingCrd).void

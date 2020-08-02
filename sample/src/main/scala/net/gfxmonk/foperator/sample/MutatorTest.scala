@@ -3,17 +3,16 @@ package net.gfxmonk.foperator.sample
 import cats.data.Validated
 import monix.eval.Task
 import monix.execution.Scheduler
-import monix.execution.atomic.{Atomic, AtomicBoolean}
+import monix.execution.atomic.Atomic
 import monix.execution.schedulers.{CanBlock, TestScheduler, TrampolineExecutionContext}
 import net.gfxmonk.foperator.internal.Logging
 import net.gfxmonk.foperator.sample.Implicits._
 import net.gfxmonk.foperator.sample.Models._
 import net.gfxmonk.foperator.testkit.FoperatorDriver
-import net.gfxmonk.foperator.{ResourceMirror, ResourceState}
+import net.gfxmonk.foperator.{FoperatorContext, ResourceMirror, ResourceState}
 import skuber.{ListResource, ObjectResource}
 
 import scala.concurrent.duration._
-import scala.concurrent.{Await, Future}
 import scala.util.Random
 
 case class MutationTestCase(seed: Long, steps: Int, maxActionsPerStep: Int) {
@@ -26,12 +25,12 @@ object MutationTestCase {
 
 object MutatorTestLive extends Logging {
   def main(args: Array[String]): Unit = {
-    val implicits = SchedulerImplicits.global
+    val ctx = FoperatorContext.global
     args match {
       case Array() => while(true) {
-        MutatorTest.testLive(MutationTestCase.withSeed(System.currentTimeMillis()), implicits)
+        MutatorTest.testLive(MutationTestCase.withSeed(System.currentTimeMillis()), ctx)
       }
-      case args => args.map(_.toLong).foreach(seed => MutatorTest.testLive(MutationTestCase.withSeed(seed), implicits))
+      case args => args.map(_.toLong).foreach(seed => MutatorTest.testLive(MutationTestCase.withSeed(seed), ctx))
     }
   }
 }
@@ -76,23 +75,7 @@ object MutatorTest extends Logging {
     val testScheduler = TestScheduler()
 
     val driver = FoperatorDriver(testScheduler)
-    implicit val client = driver.client
-
-    val implicits = {
-      // This is extremely silly: akka's logger setup synchronously blocks for the logger to (asynchronously)
-      // respond that it's ready, but it can't because the scheduler's paused. So... we run it in a background
-      // thread until akka gets unblocked.
-      val condition = AtomicBoolean(false)
-      val runScheduler = Future {
-        while(!condition.get()) {
-          testScheduler.tick(1.second)
-        }
-      }(dedicatedThread)
-      val result = SchedulerImplicits.full(testScheduler, client)
-      condition.set(true)
-      Await.result(runScheduler, Duration.Inf)
-      result
-    }
+    val ctx = FoperatorContext(testScheduler, client = Some(driver.client))
 
     def checkMirrorContents(greetings: ResourceMirror[Greeting], people: ResourceMirror[Person]): Task[Unit] = {
       // To detect issues with the mirror machinery, this compares the mirror's
@@ -148,21 +131,21 @@ object MutatorTest extends Logging {
     (for {
       greetings <- driver.mirror[Greeting]()
       people <- driver.mirror[Person]()
-      mutator = new Mutator(client, greetings, people)
+      mutator = new Mutator(ctx.client, greetings, people)
 
       // Start main eagerly, and make sure it lives on the testScheduler. Once started, tick() to ensure
       // it's set up all its wachers etc
-      main = new AdvancedOperator(implicits).runWith(greetings, people).runToFuture(testScheduler)
+      main = new AdvancedOperator(ctx).runWith(greetings, people).runToFuture(testScheduler)
       _ = testScheduler.tick()
       _ <- runWithValidation(params, mutator, main = Task.fromFuture(main),
         tickAndValidate = tickAndValidate(mutator, greetings, people))
     } yield ()).runSyncUnsafe()(realScheduler, implicitly[CanBlock])
   }
 
-  def testLive(params: MutationTestCase, implicits: SchedulerImplicits) = {
+  def testLive(params: MutationTestCase, ctx: FoperatorContext) = {
     // Runs a test case against a real k8s cluster
-    implicit val client = implicits.k8sClient
-    implicit val mat = implicits.materializer
+    implicit val client = ctx.client
+    implicit val mat = ctx.materializer
 
     val updateCount = Atomic(0)
     val lastUpdateCount = Atomic(0)
@@ -219,7 +202,7 @@ object MutatorTest extends Logging {
 
     (deleteAll >> Mutator.withResourceMirrors(client) { (greetings, people) =>
       val mutator = new Mutator(client, greetings, people)
-      val main = new AdvancedOperator(implicits).runWith(greetings, people)
+      val main = new AdvancedOperator(ctx).runWith(greetings, people)
 
       // In parallel with main, we also trace when we see updates to resources.
       // This lets validate check that _some_ update has been seen since the last action,
@@ -244,7 +227,7 @@ object MutatorTest extends Logging {
           numConcurrent <- Task(rand.between(1, params.maxActionsPerStep+1))
           actions <- mutator.nextActions(rand, numConcurrent, _ => true)
           _ <- Task(logger.info(s"Running step #${stepNo} ${actions} (params: $params)"))
-          _ <- Task.gatherUnordered(actions.map(_.run)).void
+          _ <- Task.parSequenceUnordered(actions.map(_.run)).void
           _ <- tickAndValidate
         } yield ()).flatMap(_ => loop(stepNo + 1))
       }

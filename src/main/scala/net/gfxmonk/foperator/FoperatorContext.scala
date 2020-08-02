@@ -13,8 +13,13 @@ import scala.concurrent.duration._
 import scala.concurrent.blocking
 
 /**
- * Encapsulates all the dependencies needed for foperator:
- *  - Actor system (akka)
+ * Encapsulates all the dependencies needed for foperator.
+ * You should also import net.gfxmonk.foperator.implicits._
+ * in order to derive the various components from an
+ * `implicit val _ = FoperatorContext(...)`
+ *
+ * Components:
+ *  - ActorSystem (akka)
  *  - Materializer (akka streams)
  *  - Scheduler (monix)
  *  - KubernetesClient (skuber)
@@ -75,4 +80,6 @@ object FoperatorContext {
     "akka.loggers" -> List("akka.event.slf4j.Slf4jLogger").asJava,
     "akka.logging-filter" -> "akka.event.slf4j.Slf4jLoggingFilter",
   ).asJava)
+
+  def global: FoperatorContext = FoperatorContext(Scheduler.global)
 }
