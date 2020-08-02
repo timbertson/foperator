@@ -20,7 +20,7 @@ package object implicits {
 
   implicit def customResourceEq[Sp,St](implicit eqSp: Eq[Sp], eqSt: Eq[St]): Eq[CustomResource[Sp,St]] = new Eq[CustomResource[Sp,St]] {
     override def eqv(x: CustomResource[Sp, St], y: CustomResource[Sp, St]): Boolean = {
-      // use match so that this fails to compile if CustomResource gains new fields
+      // use a full unapply to extract fields so that this fails to compile if CustomResource gains new fields
       (x, y) match {
         case (
           CustomResource(kind: String, apiVersion: String, metadata: ObjectMeta, spec: Sp, status: Option[St]),

@@ -1,17 +1,12 @@
 package net.gfxmonk.foperator.sample
 
-import akka.actor.ActorSystem
-import akka.stream.ActorMaterializer
-import monix.execution.Scheduler
 import net.gfxmonk.foperator.Update.{Metadata, Spec, Status, Unchanged}
 import net.gfxmonk.foperator.sample.Models.{GreetingSpec, GreetingStatus, PersonSpec, PersonStatus}
 import net.gfxmonk.foperator.sample.Mutator.Action
 import net.gfxmonk.foperator.{CustomResourceUpdate, ResourceState}
-import skuber.api.client.KubernetesClient
-import skuber.{CustomResource, ObjectMeta, ResourceDefinition, k8sInit}
+import skuber.{CustomResource, ObjectMeta, ResourceDefinition}
 
-import scala.concurrent.ExecutionContext
-
+// TODO move under PrettyPrint
 object Implicits {
   implicit val prettyPrintObjectMeta: PrettyPrint[ObjectMeta] = new PrettyPrint[ObjectMeta] {
     override def pretty(value: ObjectMeta): String = s"Meta(v${value.resourceVersion}, finalizers=${value.finalizers.getOrElse(Nil)}, deletionTimestamp=${value.deletionTimestamp})"
@@ -57,25 +52,4 @@ object Implicits {
 
   implicit val prettyGreetingSpec: PrettyPrint[GreetingSpec] = PrettyPrint.fromString[GreetingSpec]
   implicit val prettyGreetingStatus: PrettyPrint[GreetingStatus] = PrettyPrint.fromString[GreetingStatus]
-}
-
-// There's a few implicits that are all tied to the given scheduler.
-// We don't want to have to write them all up in every Main class, so we bundle them here
-class SchedulerImplicits(s: Scheduler, client: Option[KubernetesClient]) {
-  implicit val scheduler: Scheduler = s
-  implicit val system: ActorSystem = ActorSystem(
-    name = "operatorActorSystem",
-    config = None,
-    classLoader = None,
-    defaultExecutionContext = Some[ExecutionContext](scheduler)
-  )
-  implicit val materializer = ActorMaterializer()
-
-  implicit val k8sClient: KubernetesClient = client.getOrElse(k8sInit)
-}
-
-object SchedulerImplicits {
-  def apply(scheduler: Scheduler) = new SchedulerImplicits(scheduler, None)
-  def full(scheduler: Scheduler, client: KubernetesClient) = new SchedulerImplicits(scheduler, Some(client))
-  def global: SchedulerImplicits = apply(Scheduler.global)
 }

@@ -9,6 +9,7 @@ import cats.implicits._
 import monix.eval.{Task, TaskApp}
 import monix.reactive.Observable
 import net.gfxmonk.foperator._
+import net.gfxmonk.foperator.implicits._
 import net.gfxmonk.foperator.internal.Logging
 import net.gfxmonk.foperator.sample.Implicits._
 import net.gfxmonk.foperator.sample.Models.{Greeting, GreetingSpec, Person, PersonSpec}
@@ -21,14 +22,13 @@ import scala.util.{Failure, Random, Success}
 
 object SimpleWithMutator extends TaskApp with Logging {
   override def run(args: List[String]): Task[ExitCode] = {
-    val implicits = SchedulerImplicits(scheduler)
-    val simple = new SimpleOperator(implicits)
-    val advanced = new AdvancedOperator(implicits)
-    implicit val mat = implicits.materializer
-    advanced.install() >> Mutator.withResourceMirrors(implicits.k8sClient) { (greetings, people) =>
+    implicit val ctx = FoperatorContext(scheduler)
+    val simple = new SimpleOperator(ctx)
+    val advanced = new AdvancedOperator(ctx)
+    advanced.install() >> Mutator.withResourceMirrors(ctx.client) { (greetings, people) =>
       Task.parZip2(
         simple.runWith(greetings),
-        new Mutator(implicits.k8sClient, greetings, people).run
+        new Mutator(ctx.client, greetings, people).run
       ).void
     }
   }.map(_ => ExitCode.Success)
@@ -36,13 +36,12 @@ object SimpleWithMutator extends TaskApp with Logging {
 
 object AdvancedWithMutator extends TaskApp {
   override def run(args: List[String]): Task[ExitCode] = {
-    val implicits = SchedulerImplicits(scheduler)
-    val advanced = new AdvancedOperator(implicits)
-    implicit val mat = implicits.materializer
-    advanced.install() >> Mutator.withResourceMirrors(implicits.k8sClient) { (greetings, people) =>
+    implicit val ctx = FoperatorContext(scheduler)
+    val advanced = new AdvancedOperator(ctx)
+    advanced.install() >> Mutator.withResourceMirrors(ctx.client) { (greetings, people) =>
       Task.parZip2(
         advanced.runWith(greetings, people),
-        new Mutator(implicits.k8sClient, greetings, people).run
+        new Mutator(ctx.client, greetings, people).run
       ).void
     }
   }.map(_ => ExitCode.Success)
