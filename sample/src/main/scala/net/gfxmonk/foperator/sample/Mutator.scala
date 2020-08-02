@@ -11,7 +11,7 @@ import monix.reactive.Observable
 import net.gfxmonk.foperator._
 import net.gfxmonk.foperator.implicits._
 import net.gfxmonk.foperator.internal.Logging
-import net.gfxmonk.foperator.sample.Implicits._
+import net.gfxmonk.foperator.sample.PrettyPrint.Implicits._
 import net.gfxmonk.foperator.sample.Models.{Greeting, GreetingSpec, Person, PersonSpec}
 import play.api.libs.json.Format
 import skuber.api.client.KubernetesClient
