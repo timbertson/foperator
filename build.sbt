@@ -22,14 +22,6 @@ lazy val lib = (project in file("."))
     name := "foperator"
   )
 
-lazy val testkit = (project in file("testkit"))
-  .settings(common)
-  .settings(
-    name := "foperator-testkit",
-    libraryDependencies ++= Seq(
-    ),
-  ).dependsOn(lib)
-
 lazy val sample = (project in file("sample"))
   .settings(common)
   .settings(
@@ -37,11 +29,10 @@ lazy val sample = (project in file("sample"))
     libraryDependencies ++= Seq(
       "ch.qos.logback" % "logback-classic" % "1.2.3",
     ),
-    testFrameworks += new TestFramework("minitest.runner.Framework"),
     packMain := Map(
       "simple-mutator" -> "net.gfxmonk.foperator.sample.SimpleWithMutator",
       "advanced-mutator" -> "net.gfxmonk.foperator.sample.AdvancedWithMutator",
       "mutator-test" -> "net.gfxmonk.foperator.sample.MutatorTest",
       "mutator-test-live" -> "net.gfxmonk.foperator.sample.MutatorTestLive",
     ),
-  ).dependsOn(lib, testkit).enablePlugins(PackPlugin)
+  ).dependsOn(lib).enablePlugins(PackPlugin)
