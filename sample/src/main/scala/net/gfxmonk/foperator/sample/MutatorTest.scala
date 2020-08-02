@@ -6,7 +6,7 @@ import monix.execution.Scheduler
 import monix.execution.atomic.Atomic
 import monix.execution.schedulers.{CanBlock, TestScheduler, TrampolineExecutionContext}
 import net.gfxmonk.foperator.internal.Logging
-import net.gfxmonk.foperator.sample.Implicits._
+import net.gfxmonk.foperator.sample.PrettyPrint.Implicits._
 import net.gfxmonk.foperator.sample.Models._
 import net.gfxmonk.foperator.testkit.FoperatorDriver
 import net.gfxmonk.foperator.{FoperatorContext, ResourceMirror, ResourceState}

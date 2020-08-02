@@ -6,7 +6,7 @@ import monix.eval.{Task, TaskApp}
 import net.gfxmonk.foperator._
 import net.gfxmonk.foperator.implicits._
 import net.gfxmonk.foperator.internal.Logging
-import net.gfxmonk.foperator.sample.Implicits._
+import net.gfxmonk.foperator.sample.PrettyPrint.Implicits._
 import skuber.apiextensions.CustomResourceDefinition
 
 import scala.util.Try

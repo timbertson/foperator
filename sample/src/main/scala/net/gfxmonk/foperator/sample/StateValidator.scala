@@ -4,7 +4,7 @@ import cats.data.{NonEmptyList, Validated, ValidatedNel}
 import cats.implicits._
 import monix.eval.Task
 import net.gfxmonk.foperator.internal.Logging
-import net.gfxmonk.foperator.sample.Implicits._
+import net.gfxmonk.foperator.sample.PrettyPrint.Implicits._
 import net.gfxmonk.foperator.sample.Models._
 import net.gfxmonk.foperator.{Id, ResourceState}
 
