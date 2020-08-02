@@ -1,6 +1,7 @@
 package net.gfxmonk.foperator.sample
 
 import net.gfxmonk.foperator.internal.Logging
+import net.gfxmonk.foperator.sample.mutator.{MutationTestCase, MutatorTest}
 import org.scalatest.funspec.AnyFunSpec
 
 class AdvancedTest extends AnyFunSpec with Logging {

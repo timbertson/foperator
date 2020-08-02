@@ -1,4 +1,4 @@
-package net.gfxmonk.foperator.sample
+package net.gfxmonk.foperator.sample.mutator
 
 import cats.data.Validated
 import monix.eval.Task
@@ -6,8 +6,9 @@ import monix.execution.Scheduler
 import monix.execution.atomic.Atomic
 import monix.execution.schedulers.{CanBlock, TestScheduler, TrampolineExecutionContext}
 import net.gfxmonk.foperator.internal.Logging
-import net.gfxmonk.foperator.sample.PrettyPrint.Implicits._
 import net.gfxmonk.foperator.sample.Models._
+import net.gfxmonk.foperator.sample.AdvancedOperator
+import net.gfxmonk.foperator.sample.PrettyPrint.Implicits._
 import net.gfxmonk.foperator.testkit.FoperatorDriver
 import net.gfxmonk.foperator.{FoperatorContext, ResourceMirror, ResourceState}
 import skuber.{ListResource, ObjectResource}

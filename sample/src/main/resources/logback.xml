@@ -25,7 +25,7 @@
         <appender-ref ref="SAMPLE" />
     </logger>
 
-    <logger name="net.gfxmonk.foperator.sample.Mutator" additivity="false">
+    <logger name="net.gfxmonk.foperator.sample.mutator.Mutator" additivity="false">
         <appender-ref ref="MUTATOR" />
     </logger>
     <logger name="net.gfxmonk.foperator.sample.MutatorTest" additivity="false">

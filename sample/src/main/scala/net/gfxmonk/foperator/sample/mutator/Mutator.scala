@@ -1,4 +1,4 @@
-package net.gfxmonk.foperator.sample
+package net.gfxmonk.foperator.sample.mutator
 
 import java.util.concurrent.TimeUnit
 
@@ -11,8 +11,9 @@ import monix.reactive.Observable
 import net.gfxmonk.foperator._
 import net.gfxmonk.foperator.implicits._
 import net.gfxmonk.foperator.internal.Logging
-import net.gfxmonk.foperator.sample.PrettyPrint.Implicits._
 import net.gfxmonk.foperator.sample.Models.{Greeting, GreetingSpec, Person, PersonSpec}
+import net.gfxmonk.foperator.sample.PrettyPrint.Implicits._
+import net.gfxmonk.foperator.sample.{AdvancedOperator, PrettyPrint, SimpleOperator}
 import play.api.libs.json.Format
 import skuber.api.client.KubernetesClient
 import skuber.{CustomResource, HasStatusSubresource, ObjectResource, ResourceDefinition}

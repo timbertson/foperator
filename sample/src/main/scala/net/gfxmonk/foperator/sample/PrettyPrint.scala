@@ -3,7 +3,7 @@ package net.gfxmonk.foperator.sample
 import net.gfxmonk.foperator.{CustomResourceUpdate, ResourceState}
 import net.gfxmonk.foperator.Update.{Metadata, Spec, Status, Unchanged}
 import net.gfxmonk.foperator.sample.Models.{GreetingSpec, GreetingStatus, PersonSpec, PersonStatus}
-import net.gfxmonk.foperator.sample.Mutator.Action
+import net.gfxmonk.foperator.sample.mutator.Mutator.Action
 import skuber.{CustomResource, ObjectMeta, ResourceDefinition}
 
 trait PrettyPrint[T] {
