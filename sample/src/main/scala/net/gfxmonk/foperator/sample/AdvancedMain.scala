@@ -74,10 +74,10 @@ class AdvancedOperator(ctx: FoperatorContext) extends TaskApp with Logging {
 
     val updateGreeting = Operations.apply(update).map(_ => ReconcileResult.Ok)
 
-    def addFinalizers(people: List[Person]) = people.traverse { person =>
+    def addFinalizers(people: List[Person]) = Task.parSequenceUnordered(people.map { person =>
       val meta = ResourceState.withFinalizer(finalizerName)(person.metadata)
       Operations.apply(person.metadataUpdate(meta))
-    }.void
+    }).void
 
     for {
       // Only proceed if referenced people are still found

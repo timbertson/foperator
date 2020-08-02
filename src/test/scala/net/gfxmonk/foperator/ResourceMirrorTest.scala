@@ -1,13 +1,12 @@
 package net.gfxmonk.foperator
 
 import monix.eval.Task
-import monix.execution.Scheduler
+import monix.execution.ExecutionModel
 import monix.execution.schedulers.TestScheduler
 import net.gfxmonk.foperator.fixture.Resource
 import net.gfxmonk.foperator.testkit.FoperatorDriver
 import org.scalatest.funspec.AnyFunSpec
 
-import scala.concurrent.duration._
 import scala.util.Failure
 
 class ResourceMirrorTest extends AnyFunSpec {
@@ -15,9 +14,10 @@ class ResourceMirrorTest extends AnyFunSpec {
   import implicits._
 
   it("aborts the `use` block on error") {
-    val testScheduler = TestScheduler()
+    val testScheduler = TestScheduler(ExecutionModel.AlwaysAsyncExecution)
     val driver = FoperatorDriver(testScheduler)
     implicit val ctx = driver.context
+    val error = new RuntimeException("injected error from test")
 
     var cancelled = false
     val f = ResourceMirror.all[Resource].use { mirror =>
@@ -26,11 +26,15 @@ class ResourceMirrorTest extends AnyFunSpec {
       })
     }.runToFuture(testScheduler)
 
+    // Ensure we're subscribed
     testScheduler.tick()
-    driver.subject[Resource].onError(new RuntimeException("watch died"))
+
+    // Then trigger an error, and our future should fail:
+    driver.subject[Resource].onError(error)
     testScheduler.tick()
-    assert(f.value == Some(""))
+    assert(f.value == Some(Failure(error)))
   }
+
   it("is populated with the initial resource set") {}
   it("emits IDs for updates") {}
   it("updates internal state before emitting an ID") {}

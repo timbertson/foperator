@@ -15,7 +15,7 @@ import monix.reactive.subjects.ConcurrentSubject
 import monix.reactive.{MulticastStrategy, Observable}
 import net.gfxmonk.foperator.internal.Logging
 import net.gfxmonk.foperator.{FoperatorContext, Id, ResourceMirror, ResourceMirrorImpl, ResourceState}
-import play.api.libs.json.{Format, JsArray, Writes}
+import play.api.libs.json.{Format, JsArray, JsNull, JsObject, JsString, Writes}
 import skuber.api.client
 import skuber.api.client.{EventType, KubernetesClient, LoggingConfig, WatchEvent}
 import skuber.api.patch.Patch
@@ -238,10 +238,23 @@ class FoperatorClient(userScheduler: Scheduler, materializer: Materializer) exte
   override def listInNamespace[L <: skuber.ListResource[_]](theNamespace: String)(implicit fmt: Format[L], rd: ResourceDefinition[L], lc: client.LoggingContext): Future[L] = ???
 
   override def list[L <: skuber.ListResource[_]]()(implicit fmt: Format[L], rd: ResourceDefinition[L], lc: client.LoggingContext): Future[L] = {
-    Future.fromTry(fmt.reads(JsArray(Nil)).asEither.left.map(err => new RuntimeException(err.toString)).toTry)
+    println("LIST ")
+    println("LIST " + (rd.spec))
+    val response = JsObject(Seq(
+      "apiVersion" -> JsString(rd.spec.defaultVersion),
+      "kind" -> JsString(rd.spec.names.kind),
+      "metadata" -> JsNull,
+      "items" -> JsArray(Nil),
+    ))
+    println("RESPO" + response)
+    val result = fmt.reads(response).asEither.left.map(err => new RuntimeException(err.toString))
+    println("LIST RESULT: " +  result)
+    Future.fromTry(result.toTry)
   }
 
-  override def listSelected[L <: skuber.ListResource[_]](labelSelector: LabelSelector)(implicit fmt: Format[L], rd: ResourceDefinition[L], lc: client.LoggingContext): Future[L] = ???
+  override def listSelected[L <: skuber.ListResource[_]](labelSelector: LabelSelector)(implicit fmt: Format[L], rd: ResourceDefinition[L], lc: client.LoggingContext): Future[L] = {
+    list[L]
+  }
 
   override def listWithOptions[L <: skuber.ListResource[_]](options: skuber.ListOptions)(implicit fmt: Format[L], rd: ResourceDefinition[L], lc: client.LoggingContext): Future[L] = {
     // TODO care about listOptions

@@ -4,13 +4,10 @@ import akka.actor.ActorSystem
 import akka.stream.ActorMaterializer
 import com.typesafe.config.{Config, ConfigFactory}
 import monix.execution.Scheduler
-import monix.execution.atomic.AtomicBoolean
 import monix.execution.schedulers.TestScheduler
 import skuber.api.client.KubernetesClient
 
-import scala.concurrent.{Await, ExecutionContext, Future}
-import scala.concurrent.duration._
-import scala.concurrent.blocking
+import scala.concurrent.ExecutionContext
 
 /**
  * Encapsulates all the dependencies needed for foperator.
@@ -27,7 +24,7 @@ import scala.concurrent.blocking
 class FoperatorContext private (config: Config, val actorSystem: ActorSystem, val scheduler: Scheduler, clientOverride: Option[KubernetesClient]) {
   val materializer: ActorMaterializer = ActorMaterializer()(actorSystem)
 
-  val client: KubernetesClient = clientOverride.getOrElse(skuber.k8sInit(actorSystem, materializer))
+  val client: KubernetesClient = clientOverride.getOrElse(skuber.k8sInit(config)(actorSystem, materializer))
 }
 
 object FoperatorContext {
@@ -40,36 +37,20 @@ object FoperatorContext {
   def config(config: Option[Config]) = configOverride.withFallback(slf4jConfigOverride).withFallback(config.getOrElse(ConfigFactory.load()))
 
   def actorSystem(scheduler: Scheduler, config: Option[Config] = None): ActorSystem = {
-    val implicits = {
-      // This is extremely silly: akka's logger setup synchronously blocks for the logger to (asynchronously)
-      // respond that it's ready, but it can't because the scheduler's paused. So... we run it in a background
-      // thread until akka gets unblocked.
+    val schedulerImpl = scheduler match {
+      case _: TestScheduler => {
+        // Akka is rife with Await.result() calls, which completely breaks any attempt to use a synthetic
+        // scheduler. This seems like the least broken alternative.
+        ExecutionContext.parasitic
+      }
+      case other => other
     }
-
-    def create() = ActorSystem(
+    ActorSystem(
       name = "foperatorActorSystem",
       config = Some(FoperatorContext.config(config)),
       classLoader = None,
-      defaultExecutionContext = Some[ExecutionContext](scheduler)
+      defaultExecutionContext = Some[ExecutionContext](schedulerImpl)
     )
-    scheduler match {
-      case testScheduler: TestScheduler => {
-        // This is extremely silly: akka's logger setup synchronously blocks for the logger to (asynchronously)
-        // respond that it's ready, but it can't because the scheduler's paused. So... we run it in a background
-        // thread until akka gets unblocked.
-
-        val condition = AtomicBoolean(false)
-        Scheduler.global.execute(() => blocking {
-          while (!condition.get()) {
-            testScheduler.tick(1.second)
-          }
-        })
-        val result = create()
-        condition.set(true)
-        result
-      }
-      case _ => create()
-    }
   }
 
   val configOverride: Config = ConfigFactory.parseMap(Map[String, Any](

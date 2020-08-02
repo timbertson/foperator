@@ -7,7 +7,7 @@ import net.gfxmonk.foperator.{ReconcileResult, Reconciler, ResourceState}
 
 import scala.concurrent.Promise
 import scala.concurrent.duration._
-import scala.util.{Failure, Success}
+import scala.util.{Failure, Success, Try}
 
 object ResourceLoop {
   trait Manager[Loop[_], T] {
@@ -75,8 +75,8 @@ class ResourceLoop[T](
   }
 
   private def reconcileLoop(errorCount: ErrorCount): Task[Unit] = {
-    val runReconcile = resetPromise >> currentState.flatMap {
-      case None => Task.pure(Success(None))
+    val runReconcile: Task[Option[Try[ReconcileResult]]] = resetPromise >> currentState.flatMap {
+      case None => Task.pure(None)
       case Some(obj) => {
         logger.trace(s"$logId performing reconcile")
         reconciler.reconcile(obj).materialize.map(Some.apply)
