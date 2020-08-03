@@ -129,18 +129,16 @@ object MutatorTest extends Logging {
       _ <- assertValid(validator)
     } yield ()
 
-    (for {
-      greetings <- driver.mirror[Greeting]()
-      people <- driver.mirror[Person]()
-      mutator = new Mutator(ctx.client, greetings, people)
-
-      // Start main eagerly, and make sure it lives on the testScheduler. Once started, tick() to ensure
-      // it's set up all its wachers etc
-      main = new AdvancedOperator(ctx).runWith(greetings, people).runToFuture(testScheduler)
-      _ = testScheduler.tick()
-      _ <- runWithValidation(params, mutator, main = Task.fromFuture(main),
-        tickAndValidate = tickAndValidate(mutator, greetings, people))
-    } yield ()).runSyncUnsafe()(realScheduler, implicitly[CanBlock])
+    val greetings = driver.mirror[Greeting]()
+    val people = driver.mirror[Person]()
+    val mutator = new Mutator(ctx.client, greetings, people)
+    // Start main eagerly, and make sure it lives on the testScheduler. Once started, tick() to ensure
+    // it's set up all its wachers etc
+    val main = new AdvancedOperator(ctx).runWith(greetings, people).runToFuture(testScheduler)
+    testScheduler.tick()
+    runWithValidation(
+      params, mutator, main = Task.fromFuture(main), tickAndValidate = tickAndValidate(mutator, greetings, people)
+    ).runSyncUnsafe()(realScheduler, implicitly[CanBlock])
   }
 
   def testLive(params: MutationTestCase, ctx: FoperatorContext) = {

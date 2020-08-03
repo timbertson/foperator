@@ -84,18 +84,16 @@ object ResourceMirror extends Logging {
     client: KubernetesClient
   ): Resource[Task,ResourceMirrorImpl[T]] = {
     Resource.fromAutoCloseable[Task, ResourceMirrorImpl[T]] {
-      ResourceMirrorImpl.mvar[T].flatMap { listeners =>
-        Task.deferFutureAction { implicit scheduler =>
-          implicit val lrf = ListResourceFormat[T]
-          client.listWithOptions[ListResource[T]](listOptions).map { listResource =>
-            val source = client.watchWithOptions[T](listOptions.copy(
-              resourceVersion = Some(listResource.resourceVersion),
-              timeoutSeconds = Some(30) // TODO
-            ))
-            val updates = Observable.fromReactivePublisher(source.runWith(Sink.asPublisher(fanout=false)))
-            logger.debug(s"ResourceMirror[${rd.spec.names.kind}] in sync, watching for updates")
-            new ResourceMirrorImpl[T](listResource.toList, updates, listeners)
-          }
+      Task.deferFutureAction { implicit scheduler =>
+        implicit val lrf = ListResourceFormat[T]
+        client.listWithOptions[ListResource[T]](listOptions).map { listResource =>
+          val source = client.watchWithOptions[T](listOptions.copy(
+            resourceVersion = Some(listResource.resourceVersion),
+            timeoutSeconds = Some(30) // TODO
+          ))
+          val updates = Observable.fromReactivePublisher(source.runWith(Sink.asPublisher(fanout=false)))
+          logger.debug(s"ResourceMirror[${rd.spec.names.kind}] in sync, watching for updates")
+          new ResourceMirrorImpl[T](listResource.toList, updates)
         }
       }
     }
@@ -105,10 +103,8 @@ object ResourceMirror extends Logging {
 object ResourceMirrorImpl {
   private [foperator] type IdSubscriber[T] = Event[Id[T]] => Task[Unit]
 
-  private [foperator] def mvar[T] = MVar[Task].of(Set.empty[IdSubscriber[T]])
-
   private [foperator] def apply[T<: ObjectResource](initial: List[T], updates: Observable[WatchEvent[T]])(implicit scheduler: Scheduler, rd: ResourceDefinition[T]) =
-    mvar[T].map(listeners => new ResourceMirrorImpl(initial, updates, listeners))
+    new ResourceMirrorImpl(initial, updates)
 }
 
 /**
@@ -122,16 +118,12 @@ object ResourceMirrorImpl {
 private [foperator] class ResourceMirrorImpl[T<: ObjectResource](
   initial: List[T],
   updates: Observable[WatchEvent[T]],
-  listeners: MVar[Task, Set[IdSubscriber[T]]]
 )(implicit scheduler: Scheduler, rd: ResourceDefinition[T])
   extends AutoCloseable with ResourceMirror[T] with Logging {
   import ResourceMirrorImpl._
+  private val listeners = Atomic(Set.empty[IdSubscriber[T]])
   private val state = Atomic(initial.map(obj => Id.of(obj) -> ResourceState.of(obj)).toMap)
   private val logIdCommon = s"${rd.spec.names.kind}-${this.hashCode}"
-
-  private def transformSubscribers(fn: Set[IdSubscriber[T]] => Set[IdSubscriber[T]]): Task[Unit] = {
-    listeners.take.flatMap(subs => listeners.put(fn(subs)))
-  }
 
   private [foperator] val future = updates.consumeWith(Consumer.foreachEval { (event:WatchEvent[T]) =>
     val id = Id.of(event._object)
@@ -152,11 +144,10 @@ private [foperator] class ResourceMirrorImpl[T<: ObjectResource](
       }
     }
     input.map { input =>
-      listeners.read.flatMap { listenerFns =>
-        logger.trace(s"[$logIdCommon] Emitting to ${listenerFns.size} listeners")
-        listenerFns.toList.traverse(_(input)).void
-      }
-    }.getOrElse(Task.unit)
+      val listenerFns = listeners.get
+      logger.trace(s"[$logIdCommon] Emitting to ${listenerFns.size} listeners")
+      listenerFns.toList.traverse(_(input)).void
+    }.orEmpty
   }).runToFuture
 
   def ids: Observable[Event[Id[T]]] = {
@@ -178,24 +169,22 @@ private [foperator] class ResourceMirrorImpl[T<: ObjectResource](
             }
           }.flatMap {
             case Ack.Continue => Task.unit
-            case Ack.Stop => cancel
+            case Ack.Stop => Task(unsafeCancel())
           }
         }
-        def cancel = transformSubscribers { s =>
-          logger.trace(s"$logId Removing subscriber")
-          s - emit
+        def unsafeCancel() = {
+          listeners.transform { s =>
+            logger.trace(s"$logId Removing subscriber")
+            s - emit
+          }
         }
 
-        (for {
-          // take listeners mutex while sending initial set, so that
-          // concurrent updates are guaranteed to see the new subscriber
-          listenerFns <- listeners.take
-          _ <- state.get.keys.toList.traverse(id => emit(Event.Updated(id))).void
-          _ <- listeners.put(listenerFns + emit)
-          _ <- Task.never[Unit]
-        } yield ())
-          .doOnCancel(cancel)
-          .runToFuture
+        // add `emit` before grabbing initial state. If updates are happening
+        // concurrently then we'll see IDs appearing possibly duplicated or in
+        // the wrong order, but both of those are fine.
+        listeners.transform(_ + emit)
+        state.get.keys.toList.traverse(id => emit(Event.Updated(id))).void.runAsyncAndForget
+        Cancelable(() => unsafeCancel())
       }
     }
   }

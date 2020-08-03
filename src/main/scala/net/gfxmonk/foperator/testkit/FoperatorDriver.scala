@@ -35,7 +35,7 @@ class FoperatorDriver(userScheduler: Scheduler) {
 
   val context: FoperatorContext = FoperatorContext(userScheduler, client=Some(client))
 
-  def mirror[O<:ObjectResource]()(implicit rd: ResourceDefinition[O]): Task[ResourceMirror[O]] = {
+  def mirror[O<:ObjectResource]()(implicit rd: ResourceDefinition[O]): ResourceMirror[O] = {
     client.mirror[O]()
   }
 
@@ -69,7 +69,7 @@ class FoperatorClient(userScheduler: Scheduler, materializer: Materializer) exte
   override val clusterServer: String = "localhost"
   override val namespaceName: String = "default"
 
-  private [testkit] def mirror[O<:ObjectResource]()(implicit rd: ResourceDefinition[O]): Task[ResourceMirror[O]] = {
+  private [testkit] def mirror[O<:ObjectResource]()(implicit rd: ResourceDefinition[O]): ResourceMirror[O] = {
     implicit val s: Scheduler = userScheduler
     val underlying = subject(rd)
     val sub = new Observable[WatchEvent[O]] {
