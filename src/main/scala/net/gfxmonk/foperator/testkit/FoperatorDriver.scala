@@ -2,6 +2,7 @@ package net.gfxmonk.foperator.testkit
 
 import java.time.{Clock, ZonedDateTime}
 import java.util.concurrent.ConcurrentHashMap
+import java.util.function.BiConsumer
 
 import akka.NotUsed
 import akka.stream.{ActorMaterializer, Materializer, OverflowStrategy}
@@ -19,13 +20,13 @@ import play.api.libs.json.{Format, JsArray, JsNull, JsObject, JsString, Writes}
 import skuber.api.client
 import skuber.api.client.{EventType, KubernetesClient, LoggingConfig, WatchEvent}
 import skuber.api.patch.Patch
-import skuber.{CustomResource, K8SException, LabelSelector, ObjectResource, Pod, ResourceDefinition, Scale}
+import skuber.{CustomResource, K8SException, LabelSelector, ListResource, ObjectResource, Pod, ResourceDefinition, Scale}
 
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.jdk.CollectionConverters._
 import scala.util.{Failure, Success, Try}
 
-class FoperatorDriver[T](userScheduler: Scheduler) {
+class FoperatorDriver(userScheduler: Scheduler) {
   private val actorSystem = FoperatorContext.actorSystem(userScheduler)
 
   private val mat = ActorMaterializer()(actorSystem)
@@ -238,18 +239,19 @@ class FoperatorClient(userScheduler: Scheduler, materializer: Materializer) exte
   override def listInNamespace[L <: skuber.ListResource[_]](theNamespace: String)(implicit fmt: Format[L], rd: ResourceDefinition[L], lc: client.LoggingContext): Future[L] = ???
 
   override def list[L <: skuber.ListResource[_]]()(implicit fmt: Format[L], rd: ResourceDefinition[L], lc: client.LoggingContext): Future[L] = {
-    println("LIST ")
-    println("LIST " + (rd.spec))
-    val response = JsObject(Seq(
-      "apiVersion" -> JsString(rd.spec.defaultVersion),
-      "kind" -> JsString(rd.spec.names.kind),
-      "metadata" -> JsNull,
-      "items" -> JsArray(Nil),
-    ))
-    println("RESPO" + response)
-    val result = fmt.reads(response).asEither.left.map(err => new RuntimeException(err.toString))
-    println("LIST RESULT: " +  result)
-    Future.fromTry(result.toTry)
+    // find the underlying set based on name (fingers-crossed)
+    // the ListResource[T] has a different ResourceDefinition, but the same Spec (in my testing)
+    val resources = state.entrySet.asScala.find { entry =>
+      entry.getKey.spec == rd.spec
+    }.map(x => x.getValue.values.asScala.toList).orEmpty
+
+    val listResource = Try(ListResource(
+      apiVersion = rd.spec.defaultVersion,
+      kind = rd.spec.names.kind,
+      metadata = None,
+      items = resources.map(_.asInstanceOf[ObjectResource]),
+    ).asInstanceOf[L])
+    Future.fromTry(listResource)
   }
 
   override def listSelected[L <: skuber.ListResource[_]](labelSelector: LabelSelector)(implicit fmt: Format[L], rd: ResourceDefinition[L], lc: client.LoggingContext): Future[L] = {

@@ -1,14 +1,10 @@
 package net.gfxmonk.foperator
 
-import akka.actor.ActorSystem
-import akka.stream.ActorMaterializer
 import cats.Eq
 import cats.implicits._
-import monix.execution.Scheduler
-import skuber.api.client.{KubernetesClient, LoggingContext}
 import skuber.{CustomResource, ObjectMeta, ObjectResource}
 
-package object implicits {
+package object implicits extends DependencyImplicits {
   implicit class UpdateExt[T<:ObjectResource](val resource: T) extends AnyVal {
     def specUpdate[Sp](sp: Sp): Update.Spec[T,Sp] = Update.Spec(resource, sp)
     def statusUpdate[St](st: St): Update.Status[T,St] = Update.Status(resource, st)
@@ -25,22 +21,14 @@ package object implicits {
         case (
           CustomResource(kind: String, apiVersion: String, metadata: ObjectMeta, spec: Sp, status: Option[St]),
           CustomResource(otherKind: String, otherApiVersion: String, otherMetadata: ObjectMeta, otherSpec: Sp, otherStatus: Option[St])
-        ) => (
+          ) => (
           kind === otherKind
             && apiVersion === otherApiVersion
             && metadata === otherMetadata
             && spec === otherSpec
             && status === otherStatus
-        )
+          )
       }
     }
   }
-
-  implicit def actorSystemFromContext(implicit context: FoperatorContext): ActorSystem = context.actorSystem
-
-  implicit def materializerFromContext(implicit context: FoperatorContext): ActorMaterializer = context.materializer
-
-  implicit def k8sClientFromContext(implicit context: FoperatorContext): KubernetesClient = context.client
-
-  implicit def schedulerFromContext(implicit context: FoperatorContext): Scheduler = context.scheduler
 }
