@@ -109,6 +109,8 @@ class FoperatorClient(userScheduler: Scheduler, materializer: Materializer) exte
   }
 
   private def getId[O <: skuber.ObjectResource](id: Id[O])(implicit rd: ResourceDefinition[O]): Option[O] = {
+    println(id)
+    println(resourceSet(rd).keys.asScala.toList)
     Option(resourceSet(rd).get(id))
   }
 
