@@ -136,7 +136,7 @@ class AdvancedOperator(ctx: FoperatorContext) extends TaskApp with Logging {
           false
         }
       }
-      logger.debug(s"Checking for necessary Greeting updates after change to ${prettyPrintCustomResource[PersonSpec,PersonStatus].pretty(person)}")
+      logger.debug(s"Checking for necessary Greeting updates after change to ${prettyPrintCustomResource[PersonSpec,Unit].pretty(person)}")
       greetingsMirror.activeValues.filter(needsUpdate).map(Id.of)
     }
 

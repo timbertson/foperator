@@ -1,9 +1,9 @@
 package net.gfxmonk.foperator.sample
 
-import net.gfxmonk.foperator.{CustomResourceUpdate, ResourceState}
 import net.gfxmonk.foperator.Update.{Metadata, Spec, Status, Unchanged}
-import net.gfxmonk.foperator.sample.Models.{GreetingSpec, GreetingStatus, PersonSpec, PersonStatus}
+import net.gfxmonk.foperator.sample.Models.{GreetingSpec, GreetingStatus, PersonSpec}
 import net.gfxmonk.foperator.sample.mutator.Mutator.Action
+import net.gfxmonk.foperator.{CustomResourceUpdate, ResourceState}
 import skuber.{CustomResource, ObjectMeta, ResourceDefinition}
 
 trait PrettyPrint[T] {
@@ -56,7 +56,7 @@ object PrettyPrint {
     }
 
     implicit val prettyPersonSpec: PrettyPrint[PersonSpec] = PrettyPrint.fromString[PersonSpec]
-    implicit val prettyPersonStatus: PrettyPrint[PersonStatus] = PrettyPrint.fromString[PersonStatus]
+    implicit val prettyUnit: PrettyPrint[Unit] = PrettyPrint.fromString[Unit]
 
     implicit val prettyGreetingSpec: PrettyPrint[GreetingSpec] = PrettyPrint.fromString[GreetingSpec]
     implicit val prettyGreetingStatus: PrettyPrint[GreetingStatus] = PrettyPrint.fromString[GreetingStatus]

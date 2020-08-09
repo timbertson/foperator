@@ -2,10 +2,10 @@ package net.gfxmonk.foperator.sample
 
 import cats.Eq
 import net.gfxmonk.foperator.{Id, Update}
-import play.api.libs.json.Json
-import skuber.{CustomResource, ObjectMeta, ResourceDefinition, ResourceSpecification}
+import play.api.libs.json.{Format, JsNull, JsSuccess, Json}
 import skuber.ResourceSpecification.{Names, Scope}
 import skuber.apiextensions.CustomResourceDefinition
+import skuber.{CustomResource, ObjectMeta, ResourceDefinition, ResourceSpecification}
 
 object Models {
   /** Greeting */
@@ -47,11 +47,9 @@ object Models {
 
   /** Person */
   case class PersonSpec(firstName: String, surname: String)
-  case class PersonStatus(value: Option[String] = None)
   implicit val eqPersonSpec: Eq[PersonSpec] = Eq.fromUniversalEquals
-  implicit val eqPersonStatus: Eq[PersonStatus] = Eq.fromUniversalEquals
 
-  type Person = CustomResource[PersonSpec,PersonStatus]
+  type Person = CustomResource[PersonSpec, Unit]
   val personSpec = CustomResourceDefinition.Spec(
     apiGroup="sample.foperator.gfxmonk.net",
     version="v1alpha1",
@@ -71,8 +69,8 @@ object Models {
 
   implicit val personRd: ResourceDefinition[Person] = ResourceDefinition(personCrd)
 
-  implicit val personStatusFmt = Json.format[PersonStatus]
   implicit val personSpecFmt = Json.format[PersonSpec]
-  implicit val personFmt = CustomResource.crFormat[PersonSpec,PersonStatus]
+  implicit val unitFormat: Format[Unit] = Format(_ => JsSuccess(()), _ => JsNull)
+  implicit val personFmt = CustomResource.crFormat[PersonSpec, Unit]
   implicit val personHasStatus: skuber.HasStatusSubresource[Person] = CustomResource.statusMethodsEnabler[Person]
 }

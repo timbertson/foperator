@@ -2,21 +2,18 @@ package net.gfxmonk.foperator.testkit
 
 import java.time.{Clock, ZonedDateTime}
 import java.util.concurrent.ConcurrentHashMap
-import java.util.function.BiConsumer
 
-import akka.NotUsed
-import akka.stream.{ActorMaterializer, Materializer, OverflowStrategy}
 import akka.stream.scaladsl.{Sink, Source}
+import akka.stream.{ActorMaterializer, Materializer}
 import akka.util.ByteString
 import cats.implicits._
-import monix.eval.Task
 import monix.execution.{Ack, Cancelable, Scheduler}
 import monix.reactive.observers.Subscriber
 import monix.reactive.subjects.ConcurrentSubject
 import monix.reactive.{MulticastStrategy, Observable}
 import net.gfxmonk.foperator.internal.Logging
-import net.gfxmonk.foperator.{FoperatorContext, Id, ResourceMirror, ResourceMirrorImpl, ResourceState}
-import play.api.libs.json.{Format, JsArray, JsNull, JsObject, JsString, Writes}
+import net.gfxmonk.foperator._
+import play.api.libs.json.{Format, Writes}
 import skuber.api.client
 import skuber.api.client.{EventType, KubernetesClient, LoggingConfig, WatchEvent}
 import skuber.api.patch.Patch

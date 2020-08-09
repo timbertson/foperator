@@ -21,7 +21,7 @@ import skuber.{CustomResource, HasStatusSubresource, ObjectResource, ResourceDef
 import scala.concurrent.duration.FiniteDuration
 import scala.util.{Failure, Random, Success}
 
-object SimpleWithMutator extends TaskApp with Logging {
+object Simple extends TaskApp with Logging {
   override def run(args: List[String]): Task[ExitCode] = {
     implicit val ctx = FoperatorContext(scheduler)
     val simple = new SimpleOperator(ctx)
@@ -35,7 +35,7 @@ object SimpleWithMutator extends TaskApp with Logging {
   }.map(_ => ExitCode.Success)
 }
 
-object AdvancedWithMutator extends TaskApp {
+object Advanced extends TaskApp {
   override def run(args: List[String]): Task[ExitCode] = {
     implicit val ctx = FoperatorContext(scheduler)
     val advanced = new AdvancedOperator(ctx)
@@ -46,6 +46,15 @@ object AdvancedWithMutator extends TaskApp {
       ).void
     }
   }.map(_ => ExitCode.Success)
+}
+
+object Standalone extends TaskApp {
+  override def run(args: List[String]): Task[ExitCode] = {
+    implicit val ctx = FoperatorContext(scheduler)
+    Mutator.withResourceMirrors(ctx.client) { (greetings, people) =>
+      new Mutator(ctx.client, greetings, people).run
+    }
+  }
 }
 
 // Mutator is an app for randomly mutating Greeting / People objects and observing the results.
@@ -166,7 +175,7 @@ object Mutator extends Logging {
 
   // Since we want to share one mirror globally, we use this as the toplevel hook, and run
   // all mutators / operators within the `op`
-  def withResourceMirrors(client: KubernetesClient)(op: (ResourceMirror[Greeting], ResourceMirror[Person]) => Task[Unit])(implicit mat: Materializer): Task[Unit] = {
+  def withResourceMirrors[T](client: KubernetesClient)(op: (ResourceMirror[Greeting], ResourceMirror[Person]) => Task[T])(implicit mat: Materializer): Task[T] = {
     implicit val _client = client
     Task(logger.info("Loading ... ")) >>
       ResourceMirror.all[Greeting].use { greetings =>
