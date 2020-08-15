@@ -123,21 +123,27 @@ class AdvancedOperator(ctx: FoperatorContext) extends TaskApp with Logging {
       }
     )
 
-    val controllerInput = ControllerInput(greetingsMirror).withActiveResourceTrigger(peopleMirror) { person =>
-      // Given a Person's latest state, figure out what greetings need an update
-      val needsUpdate = { greeting: Greeting =>
-        val shouldAdd = matches(person, greeting) && !references(person, greeting)
-        val shouldRemove = !matches(person, greeting) && references(person, greeting)
-        if (shouldAdd || shouldRemove) {
-          val desc = if (shouldAdd) { "add" } else { "remove" }
-          logger.debug(s"Greeting needs to ${desc} this person: ${prettyPrintCustomResource[GreetingSpec,GreetingStatus].pretty(greeting)}")
-          true
-        } else {
-          false
-        }
+    val controllerInput = ControllerInput(greetingsMirror).withResourceTrigger(peopleMirror) {
+      case ResourceState.SoftDeleted(person) => {
+        greetingsMirror.activeValues.filter(references(person, _)).map(Id.of)
       }
-      logger.debug(s"Checking for necessary Greeting updates after change to ${prettyPrintCustomResource[PersonSpec,Unit].pretty(person)}")
-      greetingsMirror.activeValues.filter(needsUpdate).map(Id.of)
+
+      case ResourceState.Active(person) => {
+        // Given a Person's latest state, figure out what greetings need an update
+        val needsUpdate = { greeting: Greeting =>
+          val shouldAdd = matches(person, greeting) && !references(person, greeting)
+          val shouldRemove = !matches(person, greeting) && references(person, greeting)
+          if (shouldAdd || shouldRemove) {
+            val desc = if (shouldAdd) { "add" } else { "remove" }
+            logger.debug(s"Greeting needs to ${desc} this person: ${prettyPrintCustomResource[GreetingSpec,GreetingStatus].pretty(greeting)}")
+            true
+          } else {
+            false
+          }
+        }
+        logger.debug(s"Checking for necessary Greeting updates after change to ${prettyPrintCustomResource[PersonSpec,Unit].pretty(person)}")
+        greetingsMirror.activeValues.filter(needsUpdate).map(Id.of)
+      }
     }
 
     new Controller[Greeting](operator, controllerInput)
@@ -148,15 +154,13 @@ class AdvancedOperator(ctx: FoperatorContext) extends TaskApp with Logging {
     peopleMirror: ResourceMirror[Person]
   ): Controller[Person] = {
     def finalize(person: Person) = {
-      // Before deleting a person, we need to remove references from any greeting that
-      // currently refers to this person
+      // The Greetings operator will stop referencing a person as soon as it's been deleted,
+      // but that might not be immediate. This operator just fails (and backs off) while
+      // a dangling reference remains.
       greetingsMirror.active.flatMap { active =>
-        val greetings = active.values.filter(g => references(person, g)).toList
-        Operations.applyMany(greetings.map { greeting =>
-          greeting.status.map { status =>
-            greeting.statusUpdate(status.copy(people = status.people.filterNot(_ === person.name)))
-          }.getOrElse(greeting.unchanged)
-        })
+        if (active.values.exists(references(person, _))) {
+          Task.raiseError(new RuntimeException("Waiting for greeting references to be removed"))
+        } else Task.unit
       }
     }
 

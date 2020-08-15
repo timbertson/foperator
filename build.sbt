@@ -34,7 +34,7 @@ lazy val sample = (project in file("sample"))
       "advanced" -> "net.gfxmonk.foperator.sample.AdvancedMain",
       "simple-mutator" -> "net.gfxmonk.foperator.sample.mutator.Simple",
       "advanced-mutator" -> "net.gfxmonk.foperator.sample.mutator.Advanced",
-      "mutator-standalone" -> "net.gfxmonk.foperator.sample.mutator.Standalone",
+      "mutator" -> "net.gfxmonk.foperator.sample.mutator.Standalone",
       "mutator-test" -> "net.gfxmonk.foperator.sample.mutator.MutatorTest",
       "mutator-test-live" -> "net.gfxmonk.foperator.sample.MutatorTestLive",
     ),

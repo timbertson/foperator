@@ -15,7 +15,7 @@ object SimpleMain {
 
 object SimpleOperator {
   def expectedStatus(greeting: Greeting): GreetingStatus =
-    GreetingStatus(s"hello, ${greeting.spec.name.getOrElse("UNKNOWN")}", people = Nil)
+    GreetingStatus(s"Hello, ${greeting.spec.name.getOrElse("UNKNOWN")}", people = Nil)
 }
 
 class SimpleOperator(ctx: FoperatorContext) extends TaskApp {

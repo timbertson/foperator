@@ -32,7 +32,6 @@ object Models {
       plural = "greetings",
       singular = "greeting",
       kind = "Greeting",
-      listKind = Some("Greetings"),
       shortNames = Nil
     ),
     scope=Scope.Namespaced,
@@ -57,7 +56,6 @@ object Models {
       plural = "people",
       singular = "person",
       kind = "Person",
-      listKind = Some("People"),
       shortNames = Nil
     ),
     scope=Scope.Namespaced,
