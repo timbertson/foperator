@@ -1,4 +1,4 @@
-![](/doc/logo.svg)
+![](/doc/logo.png)
 
 # foperator: functional k8s operator framework (for Scala)
 
@@ -18,7 +18,7 @@ Current status: incredibly WIP.
 
 The flow of information looks a bit like this:
 
-![](/doc/k8s-flow.svg)
+![](/doc/k8s-flow.png)
 
 The ResourceMirror is responsible for mirroring the state of watched objects, as well as providing an `ids` update stream.
 
