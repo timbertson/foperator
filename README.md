@@ -1,8 +1,8 @@
 ![](/doc/logo.png)
 
-# foperator: functional k8s operator framework (for Scala)
+# _functional_ k8s operator framework, in Scala
 
-Current status: incredibly WIP.
+Current status: everything works, but it's early days and it might change substantially without notice. Also it's not actually packaged anywhere.
 
 # Features
 
@@ -14,6 +14,14 @@ Current status: incredibly WIP.
  - First-class object deletion (`ResourceState` encapsulates `Active` | `SoftDeleted` so the types ensure correct handling of deleted resources)
  - Best practices baked in (e.g. `ResourceMirror` is the equivalent of go's `SharedInformer`, except that a `SharedInformer` isn't supported by `controller-runtime`, you have to write a custom `Controller`)
 
+# Sample operators
+
+See [./sample](./sample) for a couple of sample operators using the framework.
+
+# Why not `operator-sdk`, `controller-runtime`, etc?
+
+If you're going to shun the de-facto standard technologies for creating Kubernetes Operators, you should probably have good justification for doing so. I strongly believe that `foperator` (and Scala) lets you write operators with less bugs, less effort and less code then anything built in Go. But this is not just a gut feel, I wrote up some [extensive notes on the downsides of `operator-sdk`](./doc/operator-sdk.md) after implementing the sample operator with both `operator-sdk` and `foperator`.
+
 # Mechanics
 
 The flow of information looks a bit like this:
@@ -22,13 +30,13 @@ The flow of information looks a bit like this:
 
 The ResourceMirror is responsible for mirroring the state of watched objects, as well as providing an `ids` update stream.
 
-The Dispatcher uses the stream of updated IDs to schedule calls to the reconciler. It handles concurrency, error backoff and periodic retries.
+The Dispatcher (an internal component) uses the stream of updated IDs to schedule calls to the reconciler. It handles concurrency, error backoff and periodic retries.
 
 The reconciler is your job: given the current state of an object, does whatever it is you want to do, and (typically) updates the status of the reconciled object.
 
 # Types
 
-To get a good understanding of how foperator works, let's take a tour of the core types:
+To get a better understanding of how to write foperator code, let's take a tour of the core types you'll encounter:
 
 ## Reconciler[T]:
 
