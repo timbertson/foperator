@@ -1,0 +1,20 @@
+# permissions for end users to view greetings.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: greeting-viewer-role
+rules:
+- apiGroups:
+  - sample.foperator.gfxmonk.net
+  resources:
+  - greetings
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - sample.foperator.gfxmonk.net
+  resources:
+  - greetings/status
+  verbs:
+  - get

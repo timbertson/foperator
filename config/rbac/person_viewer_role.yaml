@@ -1,0 +1,20 @@
+# permissions for end users to view people.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: person-viewer-role
+rules:
+- apiGroups:
+  - sample.foperator.gfxmonk.net
+  resources:
+  - people
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - sample.foperator.gfxmonk.net
+  resources:
+  - people/status
+  verbs:
+  - get

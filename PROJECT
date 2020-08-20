@@ -1,0 +1,13 @@
+domain: foperator.gfxmonk.net
+layout: go.kubebuilder.io/v2
+repo: github.com/timbertson/operator-bakeoff
+resources:
+- group: sample
+  kind: Person
+  version: v1alpha1
+- group: sample
+  kind: Greeting
+  version: v1alpha1
+version: 3-alpha
+plugins:
+  go.operator-sdk.io/v2-alpha: {}

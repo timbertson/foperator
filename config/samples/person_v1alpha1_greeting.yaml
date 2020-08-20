@@ -1,0 +1,8 @@
+apiVersion: sample.foperator.gfxmonk.net/v1alpha1
+kind: Greeting
+metadata:
+  name: greeting-sample
+spec:
+  name: []
+status:
+  personIds: null

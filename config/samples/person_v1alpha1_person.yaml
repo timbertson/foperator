@@ -1,0 +1,7 @@
+apiVersion: sample.foperator.gfxmonk.net/v1alpha1
+kind: Person
+metadata:
+  name: person-sample
+spec:
+  # Add fields here
+  foo: bar
