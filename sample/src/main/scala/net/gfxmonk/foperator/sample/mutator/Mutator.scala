@@ -7,7 +7,9 @@ import cats.Eq
 import cats.effect.ExitCode
 import cats.implicits._
 import monix.eval.{Task, TaskApp}
-import monix.reactive.Observable
+import monix.execution.Scheduler
+import monix.reactive.MulticastStrategy
+import monix.reactive.subjects.ConcurrentSubject
 import net.gfxmonk.foperator._
 import net.gfxmonk.foperator.implicits._
 import net.gfxmonk.foperator.internal.Logging
@@ -301,7 +303,30 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
     } yield new StateValidator(peopleMap, greetingsMap)
   }
 
-  def runRepl(): Task[Unit] = {
+  def runRepl: Task[Unit] = {
+    // TODO figure out a less terrible solution: https://github.com/monix/monix/issues/1242
+    val globalScheduler = Scheduler.global
+    val threadScheduler = Scheduler.singleThread("stdin", daemonic = true)
+    val getThread = Task {
+      Thread.currentThread
+    }.executeOn(threadScheduler)
+
+    val lines = ConcurrentSubject[String](MulticastStrategy.publish)(globalScheduler)
+    val readLoop = getThread.flatMap { thread =>
+      Task {
+        logger.info("--- ready (press return to mutate) ---")
+        while(true) {
+          scala.io.Source.stdin.getLines.foreach { line =>
+            lines.onNext(line)
+          }
+          lines.onComplete()
+        }
+      }.executeOn(threadScheduler).doOnCancel(Task {
+        println("Cancelling ...")
+        thread.interrupt()
+      }.executeOn(globalScheduler))
+    }
+
     def doSomething(filter: Action => Boolean): Task[Unit] = {
       nextAction(Random, filter).flatMap { action =>
         logger.info(s"Running: ${prettyPrintAction.pretty(action)}")
@@ -315,29 +340,7 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
       }
     }
 
-    Observable.fromTask(Task {
-      // DEBUGGING...
-      // class BR(in: InputStreamReader) extends BufferedReader(in) {
-      //   override def readLine(): String = {
-      //     println(">READ")
-      //     try {
-      //       val result = super.readLine()
-      //       println("<READ")
-      //       result
-      //     } finally {
-      //       println("[x READ]")
-      //     }
-      //   }
-      // }
-
-      // We should be able to use Observable.fromLinesReader, but that
-      // uses InputStreamReader.read, which can't be interrupted (even on process exit).
-      // Workaround is to close the stream on exit, with:
-      //   Runtime.getRuntime.addShutdownHook(new Thread(() => sys.process.stdin.close()))
-      // (but scala's IO.source seems to work fine without that)
-      logger.info("--- ready (press return to mutate) ---")
-      Observable.fromIterator(Task(scala.io.Source.stdin.getLines()))
-    }).concat.mapEval {
+    val consume = lines.mapEval {
       case "d" => doSomething(_.isInstanceOf[Delete[_,_]])
       case "m" => doSomething(_.isInstanceOf[Modify[_,_]])
       case "c" => doSomething(_.isInstanceOf[Create[_,_]])
@@ -347,6 +350,8 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
         Task(logger.error(s"Unknown command: ${other}, try c/m/d"))
       }
     }.mapEval(_ => Task(println("\n\n\n"))).completedL
+
+    Task.parZip2(readLoop, consume).void
   }
 
   def run: Task[ExitCode] = {
