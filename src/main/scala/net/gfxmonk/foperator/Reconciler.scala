@@ -47,23 +47,6 @@ object Reconciler extends Logging {
     new UpdateReconciler(fn, apply)
   }
 
-  def withFinalizer[Sp, St](name: String, reconciler: Reconciler[CustomResource[Sp, St]])
-    ( implicit fmt: Format[CustomResource[Sp, St]],
-      rd: ResourceDefinition[CustomResource[Sp, St]],
-      st: HasStatusSubresource[CustomResource[Sp, St]],
-      client: KubernetesClient,
-      eqSp: Eq[Sp],
-      eqSt: Eq[St],
-    ): Reconciler[CustomResource[Sp, St]] = make[CustomResource[Sp, St]] { resource =>
-    val withFinalizer = resource.metadataUpdate(ResourceState.withFinalizer(name)(resource.metadata))
-    // TODO: this doesn't apply finalizer when reconciler fails. We should apply finalizer, and then
-    // resubmit for reconciliation
-    Update.change[CustomResource[Sp,St], Sp, St](withFinalizer).fold(reconciler.reconcile, { change =>
-      logger.debug(s"Adding finalizer $name to ${Id.of(resource)}")
-      Operations.apply(change).map(_ => ReconcileResult.Ok)
-    })
-  }
-
   def empty: Reconciler[Any] = EmptyReconciler
 
   def updaterWith[T,U](updateFn: (U) => Task[ReconcileResult])(reconcileFn: T => Task[U]): UpdateReconciler[T,U] = {

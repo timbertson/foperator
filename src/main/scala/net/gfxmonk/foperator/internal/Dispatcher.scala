@@ -11,7 +11,10 @@ import scala.concurrent.Promise
 
 object Dispatcher {
   def apply[T<:ObjectResource](operator: Operator[T], input: ControllerInput[T])(implicit scheduler: Scheduler): Task[Dispatcher[ResourceLoop,T]] = {
-    val reconciler = Finalizer.reconciler(operator.finalizer, operator.reconciler)
+    val reconciler = operator.finalizer match {
+      case Some(finalizer) => Finalizer.merge(finalizer, operator.reconciler)
+      case None => Finalizer.lift(operator.reconciler)
+    }
     val manager = ResourceLoop.manager[T](operator.refreshInterval)
 
     Semaphore[Task](operator.concurrency.toLong).map { semaphore =>

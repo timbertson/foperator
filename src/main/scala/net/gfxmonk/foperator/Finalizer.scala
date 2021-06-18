@@ -1,81 +1,73 @@
 package net.gfxmonk.foperator
 
-import cats.Eq
 import cats.data.NonEmptyList
+import cats.implicits._
 import monix.eval.Task
-import net.gfxmonk.foperator.internal.Logging
+import net.gfxmonk.foperator.Reconciler.logger
 import play.api.libs.json.Format
 import skuber.api.client.KubernetesClient
-import skuber.{CustomResource, HasStatusSubresource, ResourceDefinition}
+import skuber.{ObjectEditor, ObjectMeta, ObjectResource, ResourceDefinition}
 
-// Finalizer is much like a reconciler, except it deals with ResourceState[T]
-// and returns a new T to be fed to the downstream reconciler
-trait Finalizer[T] {
-  def reconcileState(resource: ResourceState[T]): Task[ResourceState[T]]
-}
-
-class CustomResourceFinalizer[Sp,St](name: String,
-                                     destroy: CustomResource[Sp,St] => Task[Unit],
-                                    )(
-                                      implicit fmt: Format[CustomResource[Sp,St]],
-                                      rd: ResourceDefinition[CustomResource[Sp,St]],
-                                      st: HasStatusSubresource[CustomResource[Sp,St]],
-                                      client: KubernetesClient,
-                                      eqSp: Eq[Sp],
-                                      eqSt: Eq[St],
-                                    ) extends Finalizer[CustomResource[Sp,St]] with Logging {
-  import net.gfxmonk.foperator.implicits._
-
-  private def reconcileFn(resource: ResourceState[CustomResource[Sp,St]]): Task[CustomResourceUpdate[Sp,St]] = {
-    def finalizers(resource:CustomResource[Sp,St]) = resource.metadata.finalizers.getOrElse(Nil)
-    def hasMine(resource:CustomResource[Sp,St]) = finalizers(resource).contains(name)
-
-    resource match {
-      case ResourceState.SoftDeleted(resource) => {
-        // Soft deleted, apply finalizer and remove
-        if (hasMine(resource)) {
-          // byee!
-          logger.debug(s"Finalizing ${Id.of(resource)} [$name]")
-          destroy(resource).map { (_:Unit) =>
-            val newFinalizers = NonEmptyList.fromList(finalizers(resource).filterNot(_ == name)).map(_.toList)
-            // TODO ensure `None` actually deletes the finalizer
-            resource.metadataUpdate(resource.metadata.copy(finalizers=newFinalizers))
-          }
-        } else {
-          // noop, finalizer already removed
-          Task.pure(resource.unchanged)
-        }
-      }
-      case ResourceState.Active(resource) => Task.pure(resource.unchanged)
-    }
-  }
-
-  override def reconcileState(resource: ResourceState[CustomResource[Sp,St]]): Task[ResourceState[CustomResource[Sp,St]]] = {
-    reconcileFn(resource).flatMap(op => Operations.apply(op)).map(ResourceState.of)
-  }
-}
+class Finalizer[T](
+  val name: String,
+  val update: (T, ObjectMeta) => Task[T],
+  val finalizeFn: T => Task[Unit])
 
 object Finalizer {
-  def reconciler[T](finalizer: Finalizer[T], reconciler: Reconciler[T]): Reconciler[ResourceState[T]] = new Reconciler[ResourceState[T]] {
+  private[foperator] def merge[O<:ObjectResource](finalizer: Finalizer[O], reconciler: Reconciler[O]): Reconciler[ResourceState[O]] =
+    new Reconciler[ResourceState[O]] {
+      private def finalizers(resource:O) = resource.metadata.finalizers.getOrElse(Nil)
+
+      override def reconcile(resource: ResourceState[O]): Task[ReconcileResult] = {
+        import implicits.metadataEq
+        resource match {
+          case ResourceState.Active(resource) => {
+            val expectedMeta = ResourceState.withFinalizer(finalizer.name, resource.metadata)
+            if (resource.metadata === expectedMeta) {
+              // already installed, regular reconcile
+              reconciler.reconcile(resource)
+            } else {
+              // install finalizer before doing any user actions.
+              // Note that we don't even invoke the user reconciler in this case,
+              // we rely on a re-reconcile being triggered by the metadata addition
+              logger.info(s"Adding finalizer ${finalizer.name} to ${Id.of(resource)}")
+              finalizer.update(resource, expectedMeta).as(ReconcileResult.Ok)
+            }
+          }
+
+          case ResourceState.SoftDeleted(resource) => {
+            val expectedMeta = ResourceState.withoutFinalizer(finalizer.name, resource.metadata)
+            if (expectedMeta === resource.metadata) {
+              Task.pure(ReconcileResult.Ok)
+            } else {
+              logger.info(s"Finalizing ${Id.of(resource)} [${finalizer.name}]")
+              finalizer.finalizeFn(resource).map { (_: Unit) =>
+                finalizer.update(resource, expectedMeta)
+              }.as(ReconcileResult.Ok)
+            }
+          }
+        }
+      }
+    }
+
+  // lift a regular reconciler into the finalizer contract (when we don't have any actual finalizer logic)
+  private[foperator] def lift[T](reconciler: Reconciler[T]): Reconciler[ResourceState[T]] = new Reconciler[ResourceState[T]] {
     override def reconcile(resource: ResourceState[T]): Task[ReconcileResult] = {
-      finalizer.reconcileState(resource).flatMap {
+      resource match {
         case ResourceState.Active(resource) => reconciler.reconcile(resource)
         case ResourceState.SoftDeleted(_) => Task.pure(ReconcileResult.Ok)
       }
     }
   }
 
-  def apply[Sp,St](name: String)(fn: CustomResource[Sp,St] => Task[Unit])(
-    implicit fmt: Format[CustomResource[Sp,St]],
-    rd: ResourceDefinition[CustomResource[Sp,St]],
-    st: HasStatusSubresource[CustomResource[Sp,St]],
+  def apply[O<:ObjectResource, Sp,St](name: String)(finalizeFn: O => Task[Unit])(
+    implicit fmt: Format[O],
+    rd: ResourceDefinition[O],
     client: KubernetesClient,
-    eqSp: Eq[Sp],
-    eqSt: Eq[St],
-  ): CustomResourceFinalizer[Sp,St] = new CustomResourceFinalizer(name, fn)
-
-  def empty[T]: Finalizer[T] = new Finalizer[T] {
-    override def reconcileState(resource: ResourceState[T]): Task[ResourceState[T]] = Task.pure(resource)
+    editor: ObjectEditor[O]
+  ): Finalizer[O] = {
+    def update(resource: O, meta: ObjectMeta) = Task.deferFuture(client.update(editor.updateMetadata(resource, meta)))
+    new Finalizer(name, update, finalizeFn)
   }
 }
 

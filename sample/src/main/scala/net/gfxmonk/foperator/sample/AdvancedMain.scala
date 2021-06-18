@@ -43,7 +43,7 @@ class AdvancedOperator(ctx: FoperatorContext) extends TaskApp with Logging {
 
   def install() = {
     (new SimpleOperator(ctx)).install() >>
-      Operations.write[CustomResourceDefinition](personCrd).void
+      Operations.forceWrite[CustomResourceDefinition](personCrd).void
   }
 
   // should this greeting match this person?
@@ -165,7 +165,7 @@ class AdvancedOperator(ctx: FoperatorContext) extends TaskApp with Logging {
       }
     }
 
-    val operator = Operator[Person](finalizer = Finalizer(finalizerName)(finalize), refreshInterval = None)
+    val operator = Operator[Person](finalizer = Some(Finalizer(finalizerName)(finalize)), refreshInterval = None)
 
     new Controller[Person](operator, ControllerInput(peopleMirror))
   }

@@ -34,11 +34,7 @@ object ResourceState {
     case Active(_) => None
   }
 
-  def awaitingFinalizer[T<:ObjectResource](finalizer: String)(res: ResourceState[T]): Option[T] = {
-    softDeleted(res).filter(_.metadata.finalizers.getOrElse(Nil).contains(finalizer))
-  }
-
-  def withoutFinalizer(finalizer: String)(metadata: ObjectMeta): ObjectMeta = {
+  def withoutFinalizer(finalizer: String, metadata: ObjectMeta): ObjectMeta = {
     val newFinalizers = metadata.finalizers.flatMap {
       case Nil => None
       case list => list.filterNot(_ == finalizer) match {
@@ -49,18 +45,13 @@ object ResourceState {
     metadata.copy(finalizers = newFinalizers)
   }
 
-  def withFinalizer(finalizer: String)(metadata: ObjectMeta): ObjectMeta = {
+  def withFinalizer(finalizer: String, metadata: ObjectMeta): ObjectMeta = {
     val finalizers = metadata.finalizers.getOrElse(Nil)
     if (finalizers.contains_(finalizer)) {
       metadata
     } else {
       metadata.copy(finalizers = Some(finalizer :: finalizers))
     }
-  }
-
-  def softDelete(metadata: ObjectMeta): ObjectMeta = {
-    val deletionTimestamp = metadata.deletionTimestamp.getOrElse(ZonedDateTime.now(Clock.systemUTC()))
-    metadata.copy(deletionTimestamp = Some(deletionTimestamp))
   }
 }
 

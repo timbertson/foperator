@@ -71,31 +71,6 @@ object Update {
 }
 
 object Operations extends Logging {
-  def write[O<:ObjectResource](resource: O)(
-    implicit client: KubernetesClient,
-    fmt: Format[O],
-    editor: ObjectEditor[O],
-    rd: ResourceDefinition[O],
-    lc: LoggingContext): Task[O] = {
-    Task(logger.debug(s"Writing ${resource.name}")) >>
-    Task.deferFuture(client.create(resource)).materialize.flatMap {
-      case Success(resource) => Task.pure(resource)
-      case Failure(err: K8SException) if err.status.code.contains(409) => {
-        // resource exists, update based on the current resource version
-        Task.deferFuture(client.getInNamespace[O](resource.name, resource.namespace)).flatMap { existing =>
-          val currentVersion = existing.metadata.resourceVersion
-          val newMeta = resource.metadata.copy(resourceVersion = currentVersion)
-          val updatedObj = editor.updateMetadata(resource, newMeta)
-          Task.deferFuture(client.update(updatedObj))
-        }
-      }
-      case Failure(err) => Task.raiseError(err)
-    }.map { result =>
-      logger.debug(s"Wrote ${resource.name} v${resource.metadata.resourceVersion}")
-      result
-    }
-  }
-
   def apply[O <: ObjectResource, Sp,St](update: Update[O, Sp, St])(
     implicit fmt: Format[O],
     rd: ResourceDefinition[O],
@@ -108,7 +83,7 @@ object Operations extends Logging {
   ): Task[O] = {
     implicit val hasStatus: HasStatusSubresource[O] = st // TODO why is this needed?
     Update.change(update).fold(Task.pure, { change =>
-      logger.debug(s"Applying update ${change}")
+      logger.info(s"Applying update ${change}")
       Task.fromFuture(change match {
         case Update.Create(obj) => client.create(obj)
         // TODO no updateMetadata? Is metadata not a subresource?
@@ -129,7 +104,7 @@ object Operations extends Logging {
     updateable: Updateable[O, Sp, St],
   ): Task[O] = {
     Update.change(update)(eqSp, Eq.fromUniversalEquals[St], updateable).fold(Task.pure, { change =>
-      logger.debug(s"Applying update ${change}")
+      logger.info(s"Applying update ${change}")
       change match {
         case Update.Create(obj) => Task.deferFuture(client.create(obj))
         case Update.Metadata(original, meta) => Task.deferFuture(client.update(editor.updateMetadata(original, meta)))
@@ -161,5 +136,50 @@ object Operations extends Logging {
     updateable: Updateable[O, Sp, Nothing],
   ): Task[Unit] = {
     updates.traverse(update => Operations.applyUnowned(update)).void
+  }
+
+  def delete[O<:ObjectResource](id: Id[O])(
+    implicit fmt: Format[O],
+    rd: ResourceDefinition[O],
+    client: KubernetesClient,
+  ): Task[Unit] = {
+    // TODO is there a namespace-aware delete method?
+    logger.info(s"Deleting $id")
+    Task.deferFuture(client.usingNamespace(id.namespace).delete[O](id.name))
+  }
+
+  def deleteIfPresent[O<:ObjectResource](id: Id[O])(
+    implicit fmt: Format[O],
+    rd: ResourceDefinition[O],
+    client: KubernetesClient,
+  ): Task[Boolean] = {
+    delete(id).as(true).onErrorRecover {
+      case e: K8SException if e.status.code.contains(404) => false
+    }
+  }
+
+  def forceWrite[O<:ObjectResource](resource: O)(
+    implicit client: KubernetesClient,
+    fmt: Format[O],
+    editor: ObjectEditor[O],
+    rd: ResourceDefinition[O],
+    lc: LoggingContext): Task[O] = {
+    Task(logger.debug(s"Writing ${resource.name}")) >>
+      Task.deferFuture(client.create(resource)).materialize.flatMap {
+        case Success(resource) => Task.pure(resource)
+        case Failure(err: K8SException) if err.status.code.contains(409) => {
+          // resource exists, update based on the current resource version
+          Task.deferFuture(client.getInNamespace[O](resource.name, resource.namespace)).flatMap { existing =>
+            val currentVersion = existing.metadata.resourceVersion
+            val newMeta = resource.metadata.copy(resourceVersion = currentVersion)
+            val updatedObj = editor.updateMetadata(resource, newMeta)
+            Task.deferFuture(client.update(updatedObj))
+          }
+        }
+        case Failure(err) => Task.raiseError(err)
+      }.map { result =>
+        logger.info(s"Wrote ${resource.name} v${resource.metadata.resourceVersion}")
+        result
+      }
   }
 }
