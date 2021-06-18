@@ -1,6 +1,5 @@
 package net.gfxmonk.foperator
 
-import cats.data.NonEmptyList
 import cats.implicits._
 import monix.eval.Task
 import net.gfxmonk.foperator.Reconciler.logger
@@ -16,8 +15,6 @@ class Finalizer[T](
 object Finalizer {
   private[foperator] def merge[O<:ObjectResource](finalizer: Finalizer[O], reconciler: Reconciler[O]): Reconciler[ResourceState[O]] =
     new Reconciler[ResourceState[O]] {
-      private def finalizers(resource:O) = resource.metadata.finalizers.getOrElse(Nil)
-
       override def reconcile(resource: ResourceState[O]): Task[ReconcileResult] = {
         import implicits.metadataEq
         resource match {

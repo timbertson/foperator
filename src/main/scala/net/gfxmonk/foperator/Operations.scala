@@ -139,8 +139,7 @@ object Operations extends Logging {
   }
 
   def delete[O<:ObjectResource](id: Id[O])(
-    implicit fmt: Format[O],
-    rd: ResourceDefinition[O],
+    implicit rd: ResourceDefinition[O],
     client: KubernetesClient,
   ): Task[Unit] = {
     // TODO is there a namespace-aware delete method?
@@ -149,8 +148,7 @@ object Operations extends Logging {
   }
 
   def deleteIfPresent[O<:ObjectResource](id: Id[O])(
-    implicit fmt: Format[O],
-    rd: ResourceDefinition[O],
+    implicit rd: ResourceDefinition[O],
     client: KubernetesClient,
   ): Task[Boolean] = {
     delete(id).as(true).onErrorRecover {

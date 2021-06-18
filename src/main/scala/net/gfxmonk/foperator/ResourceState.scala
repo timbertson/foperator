@@ -1,7 +1,5 @@
 package net.gfxmonk.foperator
 
-import java.time.{Clock, ZonedDateTime}
-
 import cats.implicits._
 import skuber.{ObjectMeta, ObjectResource}
 

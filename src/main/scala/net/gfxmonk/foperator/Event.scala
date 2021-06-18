@@ -1,6 +1,5 @@
 package net.gfxmonk.foperator
 
-// TODO rename to Event?
 sealed trait Event[+T]
 object Event {
   // Resource added / modified. This includes soft-deletions
