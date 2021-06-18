@@ -5,8 +5,8 @@ import cats.data.NonEmptyList
 import monix.eval.Task
 import net.gfxmonk.foperator.internal.Logging
 import play.api.libs.json.Format
-import skuber.{CustomResource, HasStatusSubresource, ObjectMeta, ResourceDefinition}
 import skuber.api.client.KubernetesClient
+import skuber.{CustomResource, HasStatusSubresource, ResourceDefinition}
 
 // Finalizer is much like a reconciler, except it deals with ResourceState[T]
 // and returns a new T to be fed to the downstream reconciler

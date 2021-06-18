@@ -56,7 +56,9 @@ object Reconciler extends Logging {
       eqSt: Eq[St],
     ): Reconciler[CustomResource[Sp, St]] = make[CustomResource[Sp, St]] { resource =>
     val withFinalizer = resource.metadataUpdate(ResourceState.withFinalizer(name)(resource.metadata))
-    Update.change(withFinalizer).fold(reconciler.reconcile, { change =>
+    // TODO: this doesn't apply finalizer when reconciler fails. We should apply finalizer, and then
+    // resubmit for reconciliation
+    Update.change[CustomResource[Sp,St], Sp, St](withFinalizer).fold(reconciler.reconcile, { change =>
       logger.debug(s"Adding finalizer $name to ${Id.of(resource)}")
       Operations.apply(change).map(_ => ReconcileResult.Ok)
     })

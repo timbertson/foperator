@@ -1,7 +1,7 @@
 package net.gfxmonk.foperator
 
 import cats.Eq
-import skuber.ObjectResource
+import skuber.{ObjectMeta, ObjectResource}
 
 import scala.util.{Failure, Success, Try}
 
@@ -27,6 +27,8 @@ object Id {
   def of[T<:ObjectResource](resource: T): Id[T] = new Id(
     namespace = resource.namespace,
     name = resource.name)
+
+  def extend[T](meta: ObjectMeta, id: Id[T]) = meta.copy(namespace = id.namespace, name = id.name)
 
   // unsafe methods rely on the generic type being given correctly, since we can't
   // guarantee that without an actual instance

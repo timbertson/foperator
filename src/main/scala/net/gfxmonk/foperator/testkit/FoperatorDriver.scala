@@ -1,34 +1,28 @@
 package net.gfxmonk.foperator.testkit
 
-import java.time.{Clock, ZonedDateTime}
-import java.util.concurrent.ConcurrentHashMap
-
 import akka.stream.scaladsl.{Sink, Source}
-import akka.stream.{ActorMaterializer, Materializer}
 import akka.util.ByteString
 import cats.implicits._
 import monix.execution.{Ack, Cancelable, Scheduler}
 import monix.reactive.observers.Subscriber
 import monix.reactive.subjects.ConcurrentSubject
 import monix.reactive.{MulticastStrategy, Observable}
-import net.gfxmonk.foperator.internal.Logging
 import net.gfxmonk.foperator._
+import net.gfxmonk.foperator.internal.Logging
 import play.api.libs.json.{Format, Writes}
 import skuber.api.client
 import skuber.api.client.{EventType, KubernetesClient, LoggingConfig, WatchEvent}
 import skuber.api.patch.Patch
 import skuber.{CustomResource, K8SException, LabelSelector, ListResource, ObjectResource, Pod, ResourceDefinition, Scale}
 
+import java.time.{Clock, ZonedDateTime}
+import java.util.concurrent.ConcurrentHashMap
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.jdk.CollectionConverters._
 import scala.util.{Failure, Success, Try}
 
 class FoperatorDriver(userScheduler: Scheduler) {
-  private val actorSystem = FoperatorContext.actorSystem(userScheduler)
-
-  private val mat = ActorMaterializer()(actorSystem)
-
-  val client: FoperatorClient = new FoperatorClient(userScheduler, mat)
+  val client: FoperatorClient = new FoperatorClient(userScheduler)
 
   val context: FoperatorContext = FoperatorContext(userScheduler, client=Some(client))
 
@@ -55,11 +49,14 @@ object FoperatorClient {
 }
 
 // Just enough skuber to satisfy the needs of a typical foperator usage
-class FoperatorClient(userScheduler: Scheduler, materializer: Materializer) extends KubernetesClient with Logging {
+class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Logging {
+  import scala.annotation.nowarn
+
   import FoperatorClient._
   private val state: ResourceMap[ResourceSet[_]] = new ConcurrentHashMap[ResourceDefinition[_], ResourceSet[_]]()
   private val subjects: ResourceMap[ConcurrentSubject[_,_]] = new ConcurrentHashMap[ResourceDefinition[_], ConcurrentSubject[_,_]]()
 
+  @nowarn // upstream traid defines this as param-less
   override def close: Unit = ()
 
   override val logConfig: LoggingConfig = LoggingConfig()

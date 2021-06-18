@@ -4,7 +4,7 @@ import cats.Eq
 import cats.implicits._
 import skuber.{CustomResource, ObjectMeta, ObjectResource}
 
-package object implicits extends DependencyImplicits {
+package object implicits extends DependencyImplicits with UpdateImplicits {
   implicit class UpdateExt[T<:ObjectResource](val resource: T) extends AnyVal {
     def specUpdate[Sp](sp: Sp): Update.Spec[T,Sp] = Update.Spec(resource, sp)
     def statusUpdate[St](st: St): Update.Status[T,St] = Update.Status(resource, st)
@@ -19,8 +19,8 @@ package object implicits extends DependencyImplicits {
       // use a full unapply to extract fields so that this fails to compile if CustomResource gains new fields
       (x, y) match {
         case (
-          CustomResource(kind: String, apiVersion: String, metadata: ObjectMeta, spec: Sp, status: Option[St]),
-          CustomResource(otherKind: String, otherApiVersion: String, otherMetadata: ObjectMeta, otherSpec: Sp, otherStatus: Option[St])
+          CustomResource(kind: String, apiVersion: String, metadata: ObjectMeta, spec, status: Option[St]),
+          CustomResource(otherKind: String, otherApiVersion: String, otherMetadata: ObjectMeta, otherSpec, otherStatus: Option[St])
           ) => (
           kind === otherKind
             && apiVersion === otherApiVersion
@@ -31,4 +31,9 @@ package object implicits extends DependencyImplicits {
       }
     }
   }
+
+//  implicit def nothingEq: Eq[Nothing] = new Eq[Nothing] {
+//    // should never be invoked, but might as well assume inequality
+//    override def eqv(x: Nothing, y: Nothing): Boolean = false
+//  }
 }

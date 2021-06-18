@@ -43,7 +43,7 @@ class AdvancedOperator(ctx: FoperatorContext) extends TaskApp with Logging {
 
   def install() = {
     (new SimpleOperator(ctx)).install() >>
-      Operations.write[CustomResourceDefinition]((res, meta) => res.copy(metadata = meta))(personCrd).void
+      Operations.write[CustomResourceDefinition](personCrd).void
   }
 
   // should this greeting match this person?
@@ -62,7 +62,8 @@ class AdvancedOperator(ctx: FoperatorContext) extends TaskApp with Logging {
   private def greetingUpdater(peopleMirror: ResourceMirror[Person])
     (update: Update.Status[Greeting, GreetingStatus])
     (implicit pp: PrettyPrint[CustomResourceUpdate[GreetingSpec, GreetingStatus]]): Task[ReconcileResult] = {
-    if (Update.change(update).isRight) { // don't bother logging a no-op update
+    val updateCast: Update[Greeting, GreetingSpec, GreetingStatus] = update
+    if (Update.change(updateCast).isRight) { // don't bother logging a no-op update
       logger.info(s"Reconciled greeting, applying update: ${pp.pretty(update)}")
     }
     val ids = GreetingStatus.peopleIds(update)
@@ -72,11 +73,11 @@ class AdvancedOperator(ctx: FoperatorContext) extends TaskApp with Logging {
       }
     }
 
-    val updateGreeting = Operations.apply(update).map(_ => ReconcileResult.Ok)
+    val updateGreeting = Operations.apply(updateCast).map(_ => ReconcileResult.Ok)
 
     def addFinalizers(people: List[Person]) = Task.parSequenceUnordered(people.map { person =>
       val meta = ResourceState.withFinalizer(finalizerName)(person.metadata)
-      Operations.apply(person.metadataUpdate(meta))
+      Operations.apply[Person, PersonSpec, Unit](person.metadataUpdate(meta))
     }).void
 
     for {

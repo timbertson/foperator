@@ -14,6 +14,7 @@ case class Operator[T](
                         concurrency: Int = 1
                       )
 
+// TODO automatically install finalizer if non-None
 class Controller[T<:ObjectResource](operator: Operator[T], input: ControllerInput[T])(implicit scheduler: Scheduler) {
   def run: Task[Unit] = Dispatcher[T](operator, input).flatMap(_.run(input.events))
 }

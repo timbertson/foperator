@@ -23,7 +23,7 @@ class SimpleOperator(ctx: FoperatorContext) extends TaskApp {
   implicit val _ctxImplicit = ctx
 
   def install() = {
-    Operations.write[CustomResourceDefinition]((res, meta) => res.copy(metadata=meta))(greetingCrd).void
+    Operations.write[CustomResourceDefinition](greetingCrd).void
   }
 
   def runWith(mirror: ResourceMirror[Greeting]): Task[Unit] = {
