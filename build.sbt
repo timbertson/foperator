@@ -17,7 +17,10 @@ val common = Seq(
 lazy val lib = (project in file("."))
   .settings(common)
   .settings(
-    name := "foperator"
+    name := "foperator",
+    libraryDependencies ++= Seq(
+      "net.gfxmonk" %% "auditspec" % "0.1.0",
+    )
   )
 
 lazy val sample = (project in file("sample"))
