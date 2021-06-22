@@ -1,5 +1,3 @@
-scalaVersion in ThisBuild := "2.13.2"
-
 val common = Seq(
   version := "1.0",
 
