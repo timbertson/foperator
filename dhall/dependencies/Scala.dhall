@@ -1,0 +1,1 @@
+https://raw.githubusercontent.com/timbertson/dhall-ci-timbertson/cf63e245dd21d8a50955025cf83beab916335982/Scala/package.dhall sha256:c23ba43adc353c798002167dfc16e94524340ef097c8662a472cf8eb9f4253e6
