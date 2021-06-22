@@ -56,7 +56,7 @@ class FoperatorClient(userScheduler: Scheduler) extends KubernetesClient with Lo
   private val state: ResourceMap[ResourceSet[_]] = new ConcurrentHashMap[ResourceDefinition[_], ResourceSet[_]]()
   private val subjects: ResourceMap[ConcurrentSubject[_,_]] = new ConcurrentHashMap[ResourceDefinition[_], ConcurrentSubject[_,_]]()
 
-  @nowarn // upstream traid defines this as param-less
+  @nowarn // upstream trait defines this as param-less
   override def close: Unit = ()
 
   override val logConfig: LoggingConfig = LoggingConfig()

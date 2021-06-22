@@ -156,6 +156,14 @@ object Operations extends Logging {
     }
   }
 
+  def get[O<:ObjectResource](id: Id[O])(
+    implicit rd: ResourceDefinition[O],
+    fmt: Format[O],
+    client: KubernetesClient,
+  ): Task[Option[O]] = {
+    Task.deferFuture(client.usingNamespace(id.namespace).getOption(id.name))
+  }
+
   def forceWrite[O<:ObjectResource](resource: O)(
     implicit client: KubernetesClient,
     fmt: Format[O],
