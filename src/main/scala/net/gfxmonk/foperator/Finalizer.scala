@@ -38,7 +38,7 @@ object Finalizer {
               Task.pure(ReconcileResult.Ok)
             } else {
               logger.info(s"Finalizing ${Id.of(resource)} [${finalizer.name}]")
-              finalizer.finalizeFn(resource).map { (_: Unit) =>
+              finalizer.finalizeFn(resource).flatMap { (_: Unit) =>
                 finalizer.update(resource, expectedMeta)
               }.as(ReconcileResult.Ok)
             }
