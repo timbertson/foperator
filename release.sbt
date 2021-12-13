@@ -5,7 +5,7 @@ ThisBuild / scalaVersion := "2.13.6"
 ThisBuild / homepage := Some(url(s"https://github.com/timbertson/foperator"))
 ThisBuild / scmInfo := Some(
   ScmInfo(
-    url("https://github.com/timbertson/capsul"),
+    url("https://github.com/timbertson/foperator"),
     s"scm:git@github.com:timbertson/foperator.git"
   )
 )
