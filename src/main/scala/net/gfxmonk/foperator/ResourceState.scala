@@ -1,11 +1,13 @@
 package net.gfxmonk.foperator
 
 import cats.implicits._
-import skuber.{ObjectMeta, ObjectResource}
+import cats.Monad
+import net.gfxmonk.foperator.types.{HasFinalizers, HasSoftDelete}
 
 sealed trait ResourceState[T] {
   def raw: T
 }
+
 object ResourceState {
   case class SoftDeleted[T](value: T) extends ResourceState[T] {
     override def raw: T = value
@@ -14,8 +16,8 @@ object ResourceState {
     override def raw: T = value
   }
 
-  def of[T<:ObjectResource](value: T): ResourceState[T] = {
-    if(value.metadata.deletionTimestamp.isDefined) {
+  def of[T](value: T)(implicit sd: HasSoftDelete[T]): ResourceState[T] = {
+    if(sd.deletionTimestamp(value).isDefined) {
       SoftDeleted(value)
     } else {
       Active(value)
@@ -32,24 +34,27 @@ object ResourceState {
     case Active(_) => None
   }
 
-  def withoutFinalizer(finalizer: String, metadata: ObjectMeta): ObjectMeta = {
-    val newFinalizers = metadata.finalizers.flatMap {
-      case Nil => None
-      case list => list.filterNot(_ == finalizer) match {
-        case Nil => None
-        case list => Some(list)
-      }
-    }
-    metadata.copy(finalizers = newFinalizers)
+  def removeFinalizer[T](t: T, finalizer: String)(implicit f: HasFinalizers[T]): Option[T] = {
+    val oldFinalizers = f.finalizers(t)
+    val newFinalizers = oldFinalizers.filterNot(_ === finalizer)
+    if (newFinalizers === oldFinalizers) None else Some(f.replaceFinalizers(t, newFinalizers))
   }
 
-  def withFinalizer(finalizer: String, metadata: ObjectMeta): ObjectMeta = {
-    val finalizers = metadata.finalizers.getOrElse(Nil)
-    if (finalizers.contains_(finalizer)) {
-      metadata
+  def addFinalizer[T](t: T, finalizer: String)(implicit f: HasFinalizers[T]): Option[T] = addFinalizers(t, List(finalizer))
+
+  def addFinalizers[T](t: T, finalizers: List[String])(implicit f: HasFinalizers[T]): Option[T] = {
+    val oldFinalizers = f.finalizers(t)
+    val newFinalizers = finalizers.filterNot(oldFinalizers.contains_)
+    if (newFinalizers.isEmpty) {
+      None
     } else {
-      metadata.copy(finalizers = Some(finalizer :: finalizers))
+      Some(f.replaceFinalizers(t, newFinalizers ++ oldFinalizers))
     }
+  }
+
+  def fold[IO[_], T, R](dfl: R, fn: T => IO[R])(t: ResourceState[T])(implicit io: Monad[IO]): IO[R] = t match {
+    case SoftDeleted(_) => io.pure(dfl)
+    case Active(t) => fn(t)
   }
 }
 

@@ -1,8 +1,5 @@
 package net.gfxmonk.foperator.sample.mutator
 
-import java.util.concurrent.TimeUnit
-
-import akka.stream.Materializer
 import cats.Eq
 import cats.effect.ExitCode
 import cats.implicits._
@@ -11,27 +8,27 @@ import monix.execution.Scheduler
 import monix.reactive.MulticastStrategy
 import monix.reactive.subjects.ConcurrentSubject
 import net.gfxmonk.foperator._
-import net.gfxmonk.foperator.implicits._
 import net.gfxmonk.foperator.internal.Logging
 import net.gfxmonk.foperator.sample.Models.{Greeting, GreetingSpec, Person, PersonSpec}
 import net.gfxmonk.foperator.sample.PrettyPrint.Implicits._
 import net.gfxmonk.foperator.sample.{AdvancedOperator, PrettyPrint, SimpleOperator}
-import play.api.libs.json.Format
-import skuber.api.client.KubernetesClient
-import skuber.{CustomResource, HasStatusSubresource, ObjectResource, ResourceDefinition}
+import net.gfxmonk.foperator.skuberengine.Skuber
+import net.gfxmonk.foperator.skuberengine.implicits._
+import net.gfxmonk.foperator.types.{Engine, ObjectResource}
+import skuber.CustomResource
 
+import java.util.concurrent.TimeUnit
 import scala.concurrent.duration.FiniteDuration
 import scala.util.{Failure, Random, Success}
 
 object Simple extends TaskApp with Logging {
   override def run(args: List[String]): Task[ExitCode] = {
-    implicit val ctx = FoperatorContext(scheduler)
-    val simple = new SimpleOperator(ctx)
-    val advanced = new AdvancedOperator(ctx)
-    advanced.install() >> Mutator.withResourceMirrors(ctx.client) { (greetings, people) =>
+    val client = Skuber()
+    val simple = new SimpleOperator(client)
+    simple.install >> Mutator.withResourceMirrors(client) { (greetings, people) =>
       Task.parZip2(
-        simple.runWith(greetings),
-        new Mutator(ctx.client, greetings, people).run
+        client.ops[Greeting].runReconcilerWithInput(greetings, SimpleOperator.reconciler),
+        new Mutator(client, greetings, people).run
       ).void
     }
   }.map(_ => ExitCode.Success)
@@ -39,12 +36,12 @@ object Simple extends TaskApp with Logging {
 
 object Advanced extends TaskApp {
   override def run(args: List[String]): Task[ExitCode] = {
-    implicit val ctx = FoperatorContext(scheduler)
-    val advanced = new AdvancedOperator(ctx)
-    advanced.install() >> Mutator.withResourceMirrors(ctx.client) { (greetings, people) =>
+    val client = Skuber()
+    val advanced = new AdvancedOperator(client)
+    advanced.install >> Mutator.withResourceMirrors(client) { (greetings, people) =>
       Task.parZip2(
         advanced.runWith(greetings, people),
-        new Mutator(ctx.client, greetings, people).run
+        new Mutator(client, greetings, people).run
       ).void
     }
   }.map(_ => ExitCode.Success)
@@ -52,9 +49,9 @@ object Advanced extends TaskApp {
 
 object Standalone extends TaskApp {
   override def run(args: List[String]): Task[ExitCode] = {
-    implicit val ctx = FoperatorContext(scheduler)
-    Mutator.withResourceMirrors(ctx.client) { (greetings, people) =>
-      new Mutator(ctx.client, greetings, people).run
+    val client = Skuber()
+    Mutator.withResourceMirrors(client) { (greetings, people) =>
+      new Mutator(client, greetings, people).run
     }
   }
 }
@@ -63,6 +60,10 @@ object Standalone extends TaskApp {
 // It logs all changes to these resources, and attempts a mutation whenever you press Return
 // (Not all mutations succeed, it'll pick a new mutation on failure)
 object Mutator extends Logging {
+  implicit def withNameSkuber[T<:skuber.ObjectResource](implicit ed: skuber.ObjectEditor[T]): WithName[T] = new WithName[T] {
+    override def withName(value: T, name: String): T = ed.updateMetadata(value, value.metadata.copy(name = name))
+  }
+
   sealed trait Decision // for traversing a decision tree
 
   object Decision {
@@ -109,21 +110,20 @@ object Mutator extends Logging {
     override def conflictKey: Option[Id[_]] = None
   }
 
-  case class Delete[Sp,St](resource: CustomResource[Sp,St])(implicit rd: ResourceDefinition[CustomResource[Sp,St]], pp: PrettyPrint[CustomResource[Sp,St]], client: KubernetesClient) extends Action {
-    override def run: Task[Unit] = Task.deferFuture(client.delete(resource.name))
+  case class Delete[T](resource: T)(implicit rd: ObjectResource[T], ops: Operations[Task, _, T])
+    extends Action
+  {
+    override def run: Task[Unit] = ops.delete(Id.of(resource))
 
-    override def pretty: String = s"Delete[${rd.spec.names.kind}](${pp.pretty(resource)})"
+    override def pretty: String = s"Delete[${rd.kind}](${rd.id(resource)})"
 
     override def conflictKey: Option[Id[_]] = Some(Id.of(resource))
   }
 
-  case class Create[Sp,St](random: Random, resource: CustomResource[Sp,St])(
-    implicit rd: ResourceDefinition[CustomResource[Sp,St]],
-    fmt: Format[CustomResource[Sp,St]],
-    pp: PrettyPrint[Sp],
-    client: KubernetesClient
-  ) extends Action {
-    def pretty: String = s"Create[${rd.spec.names.kind}](${pp.pretty(resource.spec)})"
+  case class Create[T](random: Random, resource: T)
+    (implicit ops: Operations[Task, _, T], res: ObjectResource[T], n: WithName[T]) extends Action
+  {
+    def pretty: String = s"Create[${res.kind}]"
 
     private def randomId: Task[String] = {
       Task(random.nextBytes(4)).map { bytes =>
@@ -131,57 +131,51 @@ object Mutator extends Logging {
       }
     }
 
-    private def namedResource = randomId.map(resource.withName)
+    private def namedResource = randomId.map(id => n.withName(resource, id))
 
     override def run: Task[Unit] = {
       namedResource.flatMap { resource =>
-        Task.deferFuture(client.create(resource)).void
+        ops.write(resource).void
       }
     }
 
     override def conflictKey: Option[Id[_]] = None
   }
 
-  case class Modify[Sp,St](update: CustomResourceUpdate[Sp,St])(
-    implicit fmt: Format[CustomResource[Sp,St]],
-    rd: ResourceDefinition[CustomResource[Sp,St]],
-    st: HasStatusSubresource[CustomResource[Sp,St]],
-    pp: PrettyPrint[CustomResourceUpdate[Sp,St]],
-    eqSp: Eq[Sp],
-    eqSt: Eq[St],
-    client: KubernetesClient
+  case class Modify[Sp,St] private (initial: CustomResource[Sp,St], newSpec: Sp)(
+    implicit res: ObjectResource[CustomResource[Sp, St]],
+    ops: Operations[Task, _, CustomResource[Sp,St]],
+    pp: PrettyPrint[Sp]
   ) extends Action {
-    override def run: Task[Unit] = Operations.apply(update).void
-    def pretty: String = s"Modify[${rd.spec.names.kind}](${pp.pretty(update)})"
+    override def run: Task[Unit] = ops.write(initial.copy(spec=newSpec)).void
 
-    override def conflictKey: Option[Id[_]] = Some(Id.of(update.initial))
+    def pretty: String = s"Modify[${res.kind}](${res.id(initial)}, ${pp.pretty(newSpec)})"
+
+    override def conflictKey: Option[Id[_]] = Some(Id.of(initial))
   }
 
   object Modify {
-    def apply[Sp,St](update: CustomResourceUpdate[Sp,St])(
-      implicit fmt: Format[CustomResource[Sp,St]],
-      rd: ResourceDefinition[CustomResource[Sp,St]],
-      st: HasStatusSubresource[CustomResource[Sp,St]],
-      pp: PrettyPrint[CustomResourceUpdate[Sp,St]],
-      eqSp: Eq[Sp],
-      eqSt: Eq[St],
-      client: KubernetesClient
+    def spec[Sp,St](initial: CustomResource[Sp,St], newSpec: Sp)(
+      implicit res: ObjectResource[CustomResource[Sp,St]],
+      ops: Operations[Task, _, CustomResource[Sp,St]],
+      pp: PrettyPrint[Sp],
+      eqSp: Eq[Sp]
     ): Action = {
       // override Modify constructor to return Noop when nothing is actually changing
-      Update.minimal(update) match {
-        case Update.Unchanged(_) => Noop
-        case other => new Modify(other)
+      if (initial.spec === newSpec) {
+        Noop
+      } else {
+        new Modify(initial, newSpec)
       }
     }
   }
 
   // Since we want to share one mirror globally, we use this as the toplevel hook, and run
   // all mutators / operators within the `op`
-  def withResourceMirrors[T](client: KubernetesClient)(op: (ResourceMirror[Greeting], ResourceMirror[Person]) => Task[T])(implicit mat: Materializer): Task[T] = {
-    implicit val _client = client
+  def withResourceMirrors[T](client: Skuber)(op: (ResourceMirror[Task, Greeting], ResourceMirror[Task, Person]) => Task[T]): Task[T] = {
     Task(logger.info("Loading ... ")) >>
-      ResourceMirror.all[Greeting].use { greetings =>
-        ResourceMirror.all[Person].use { people =>
+      client.ops[Greeting].mirror { greetings =>
+        client.ops[Person].mirror { people =>
           Task(logger.info("Running ... ")) >>
             op(greetings, people)
         }
@@ -189,14 +183,21 @@ object Mutator extends Logging {
   }
 }
 
-class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], people: ResourceMirror[Person]) extends Logging {
-  implicit val _client = client
+class Mutator[C](client: C, greetings: ResourceMirror[Task, Greeting], people: ResourceMirror[Task, Person])
+  (implicit
+    ep: Engine[Task, C, Person],
+    eg: Engine[Task, C, Greeting],
+  ) extends Logging {
+
   import Mutator._
 
   def rootDecision(random: Random, peopleUnsorted: List[Person], greetingsUnsorted: List[Greeting]): Decision = {
     // explicitly sort so that using the same random seed will yield the same result
     val people = peopleUnsorted.sortBy(_.name)
     val greetings = greetingsUnsorted.sortBy(_.name)
+    // these shouldn't really be implicit since they carry state, but it's convenient
+    implicit val personOps: Operations[Task, C, Person] = new Operations[Task, C, Person](client)
+    implicit val greetingOps: Operations[Task, C, Greeting] = new Operations[Task, C, Greeting](client)
 
     val deletePerson = Decision(people)(person => Decision(Delete(person)))
     val deleteGreeting = Decision(greetings)(greeting => Decision(Delete(greeting)))
@@ -223,20 +224,20 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
 
     val modifyPerson = Decision(people) { person =>
       val changeSurname = Decision(surnames) { surname =>
-        Decision(Modify(new implicits.UpdateExt(person).specUpdate(person.spec.copy(surname = surname))))
+        Decision(Modify.spec(person, person.spec.copy(surname = surname)))
       }
       val changeFirstName = Decision(firstNames) { firstName =>
-        Decision(Modify(new implicits.UpdateExt(person).specUpdate(person.spec.copy(firstName = firstName))))
+        Decision(Modify.spec(person, person.spec.copy(firstName = firstName)))
       }
       Decision.eager(changeFirstName, changeSurname)
     }
 
     val modifyGreeting = Decision(greetings) { greeting =>
       val changeSurname = Decision(surnames.map(Some.apply) ++ List(None)) { surname =>
-        Decision(Modify(new implicits.UpdateExt(greeting).specUpdate(greeting.spec.copy(surname = surname))))
+        Decision(Modify.spec(greeting, greeting.spec.copy(surname = surname)))
       }
       val changeName = Decision(firstNames.map(Some.apply) ++ List(None)) { name =>
-        Decision(Modify(new implicits.UpdateExt(greeting).specUpdate(greeting.spec.copy(name = name))))
+        Decision(Modify.spec(greeting, greeting.spec.copy(name = name)))
       }
       Decision.eager(changeName, changeSurname)
     }
@@ -252,7 +253,7 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
     )
   }
 
-  private def dropNamespaceFromKey[T](map: ResourceMirror.ResourceStateMap[T]): Map[String, ResourceState[T]] = {
+  private def dropNamespaceFromKey[T](map: ResourceMirror.ResourceMap[T]): Map[String, ResourceState[T]] = {
     map.map { case (k,v) => (k.name, v) }
   }
 
@@ -298,8 +299,8 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
 
   def stateValidator = {
     for {
-      peopleMap <- people.all.map(dropNamespaceFromKey(_))
-      greetingsMap <- greetings.all.map(dropNamespaceFromKey(_))
+      peopleMap <- people.all.map(dropNamespaceFromKey)
+      greetingsMap <- greetings.all.map(dropNamespaceFromKey)
     } yield new StateValidator(peopleMap, greetingsMap)
   }
 
@@ -316,7 +317,7 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
       Task {
         logger.info("--- ready (press return to mutate) ---")
         while(true) {
-          scala.io.Source.stdin.getLines.foreach { line =>
+          scala.io.Source.stdin.getLines().foreach { line =>
             lines.onNext(line)
           }
           lines.onComplete()
@@ -341,9 +342,9 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
     }
 
     val consume = lines.mapEval {
-      case "d" => doSomething(_.isInstanceOf[Delete[_,_]])
+      case "d" => doSomething(_.isInstanceOf[Delete[_]])
       case "m" => doSomething(_.isInstanceOf[Modify[_,_]])
-      case "c" => doSomething(_.isInstanceOf[Create[_,_]])
+      case "c" => doSomething(_.isInstanceOf[Create[_]])
       case "" => doSomething(_ => true)
       case " " => stateValidator.flatMap(_.report(verbose = true))
       case other => {
@@ -362,13 +363,10 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
     ).map(_ => ExitCode.Success)
   }
 
-  private def watchResource[T<:ObjectResource](mirror: ResourceMirror[T])(implicit pp: PrettyPrint[T], rd: ResourceDefinition[T]): Task[Unit] = {
-    val logId = s"${rd.spec.names.kind}"
+  private def watchResource[T](mirror: ResourceMirror[Task, T])(implicit res: ObjectResource[T], pp: PrettyPrint[T]): Task[Unit] = {
+    val logId = s"${res.kind}"
     mirror.all.map(_.size).flatMap { initialItems =>
-      mirror.ids.drop(initialItems).map {
-        case Event.HardDeleted(id) => id
-        case Event.Updated(id) => id
-      }.mapEval { id =>
+      mirror.ids.drop(initialItems.toLong).evalMap { id =>
         mirror.all.flatMap { all =>
           val desc = all.get(id) match {
             case None => "[deleted]"
@@ -377,7 +375,12 @@ class Mutator(client: KubernetesClient, greetings: ResourceMirror[Greeting], peo
           }
           Task(logger.debug(s"[$logId total:${all.size}] Saw update to ${id}: ${desc}"))
         }
-      }.completedL
+      }.compile.drain
     }
   }
 }
+
+trait WithName[T] {
+  def withName(value: T, name: String): T
+}
+

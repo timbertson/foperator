@@ -7,6 +7,7 @@ import net.gfxmonk.foperator.internal.Logging
 import net.gfxmonk.foperator.sample.Models._
 import net.gfxmonk.foperator.sample.PrettyPrint.Implicits._
 import net.gfxmonk.foperator.sample.{AdvancedOperator, PrettyPrint, SimpleOperator}
+import net.gfxmonk.foperator.skuberengine.implicits._
 import net.gfxmonk.foperator.{Id, ResourceState}
 
 class StateValidator(people: Map[String, ResourceState[Person]], greetings: Map[String, ResourceState[Greeting]]) extends Logging {

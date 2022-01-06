@@ -1,9 +1,8 @@
 package net.gfxmonk.foperator.sample
 
-import net.gfxmonk.foperator.Update.{Metadata, Spec, Status, Unchanged}
 import net.gfxmonk.foperator.sample.Models.{GreetingSpec, GreetingStatus, PersonSpec}
 import net.gfxmonk.foperator.sample.mutator.Mutator.Action
-import net.gfxmonk.foperator.{CustomResourceUpdate, ResourceState}
+import net.gfxmonk.foperator.{Id, ResourceState}
 import skuber.{CustomResource, ObjectMeta, ResourceDefinition}
 
 trait PrettyPrint[T] {
@@ -18,6 +17,10 @@ object PrettyPrint {
   object Implicits {
     implicit val prettyPrintObjectMeta: PrettyPrint[ObjectMeta] = new PrettyPrint[ObjectMeta] {
       override def pretty(value: ObjectMeta): String = s"Meta(v${value.resourceVersion}, finalizers=${value.finalizers.getOrElse(Nil)}, deletionTimestamp=${value.deletionTimestamp})"
+    }
+
+    implicit def prettyPrintId[T]: PrettyPrint[Id[T]] = new PrettyPrint[Id[T]] {
+      override def pretty(value: Id[T]): String = value.toString
     }
 
     implicit def prettyPrintCustomResource[Sp, St](
@@ -37,17 +40,6 @@ object PrettyPrint {
       override def pretty(value: ResourceState[T]): String = value match {
         case ResourceState.SoftDeleted(value) => s"[SOFT_DELETE] ${pp.pretty(value)}"
         case ResourceState.Active(value) => pp.pretty(value)
-      }
-    }
-
-    implicit def prettyPrintUpdate[Sp,St](implicit ppSp: PrettyPrint[Sp], ppSt: PrettyPrint[St]): PrettyPrint[CustomResourceUpdate[Sp,St]] = new PrettyPrint[CustomResourceUpdate[Sp, St]] {
-      override def pretty(update: CustomResourceUpdate[Sp, St]): String = {
-        update match {
-          case Status(initial, status) => s"Update.Status(${update.id}, ${initial.status.map(ppSt.pretty).getOrElse("None")} -> ${ppSt.pretty(status)})"
-          case Spec(initial, spec) => s"Update.Spec(${update.id}, ${ppSp.pretty(initial.spec)} -> ${ppSp.pretty(spec)})"
-          case Metadata(initial, metadata) => s"Update.Metadata(${update.id}, ${prettyPrintObjectMeta.pretty(initial.metadata)} -> ${prettyPrintObjectMeta.pretty(metadata)})"
-          case Unchanged(_) => s"Update.Unchanged(${update.id})"
-        }
       }
     }
 

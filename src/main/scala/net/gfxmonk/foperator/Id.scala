@@ -1,12 +1,14 @@
 package net.gfxmonk.foperator
 
-import cats.Eq
-import skuber.{ObjectMeta, ObjectResource}
+import cats.{Eq, Order}
+import net.gfxmonk.foperator.types.ObjectResource
 
 import scala.util.{Failure, Success, Try}
 
 // Not a case class because we don't want people to create it outside the explicit API
 class Id[T] private(val namespace: String, val name: String) {
+  private [foperator] def product = (namespace, name)
+
   override def toString(): String = s"$namespace/$name"
 
   override def hashCode(): Int = name.hashCode()
@@ -17,28 +19,27 @@ class Id[T] private(val namespace: String, val name: String) {
       instance.name == name && instance.namespace == namespace
     }
   }
+
+  def sibling(name: String): Id[T] = Id[T](namespace, name)
 }
 
 object Id {
-  object Implicits {
-    implicit def IdEq[T]: Eq[Id[T]] = Eq.fromUniversalEquals[Id[T]]
-  }
+  implicit def eq[T]: Eq[Id[T]] = Eq.fromUniversalEquals[Id[T]]
+  implicit def ord[T]: Order[Id[T]] = Order.by(_.product)
 
-  def of[T<:ObjectResource](resource: T): Id[T] = new Id(
-    namespace = resource.namespace,
-    name = resource.name)
-
-  def extend[T](meta: ObjectMeta, id: Id[T]) = meta.copy(namespace = id.namespace, name = id.name)
+  def of[T](resource: T)(implicit res: ObjectResource[T]): Id[T] = res.id(resource)
 
   // unsafe methods rely on the generic type being given correctly, since we can't
   // guarantee that without an actual instance
-  def parseUnsafe[T<:ObjectResource](value: String): Try[Id[T]] = value.split('/').toList match {
-    case List(name) => Success(createUnsafe[T]("default", name))
-    case List(namespace, name) => Success(createUnsafe[T](namespace, name))
+  def parse[T](value: String): Try[Id[T]] = value.split('/').toList match {
+    case List(name) => Success(apply[T]("default", name))
+    case List(namespace, name) => Success(apply[T](namespace, name))
     case _ => Failure(new IllegalArgumentException(s"Not a valid object ID: $value"))
   }
 
-  def createUnsafe[T<:ObjectResource](namespace: String, name: String): Id[T] = {
+  def apply[T](namespace: String, name: String): Id[T] = {
     new Id[T](namespace, name)
   }
+
+  def cast[R](id: Id[_]): Id[R] = apply[R](id.namespace, id.name)
 }

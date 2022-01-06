@@ -32,7 +32,7 @@
         <appender-ref ref="MUTATOR" />
     </logger>
 
-<!--    <logger name="net.gfxmonk.foperator" level="TRACE"/>-->
+    <logger name="net.gfxmonk.foperator" level="INFO"/>
 
     <logger name="skuber.api" level="WARN"/>
 </configuration>

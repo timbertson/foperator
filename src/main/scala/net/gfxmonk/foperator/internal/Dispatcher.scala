@@ -1,65 +1,149 @@
 package net.gfxmonk.foperator.internal
 
+import cats.effect.concurrent.{Deferred, MVar, MVar2}
+import cats.effect.{Concurrent, ContextShift, Fiber, Resource, Timer}
+import cats.implicits._
+import fs2.Stream
 import monix.catnap.Semaphore
-import monix.eval.Task
-import monix.execution.Scheduler
-import monix.reactive.Observable
 import net.gfxmonk.foperator._
-import skuber.ObjectResource
+import net.gfxmonk.foperator.types.ObjectResource
 
-import scala.concurrent.Promise
-
-object Dispatcher {
-  def apply[T<:ObjectResource](operator: Operator[T], input: ControllerInput[T])(implicit scheduler: Scheduler): Task[Dispatcher[ResourceLoop,T]] = {
-    val reconciler = operator.finalizer match {
-      case Some(finalizer) => Finalizer.merge(finalizer, operator.reconciler)
-      case None => Finalizer.lift(operator.reconciler)
-    }
-    val manager = ResourceLoop.manager[T](operator.refreshInterval)
-
-    Semaphore[Task](operator.concurrency.toLong).map { semaphore =>
-      new Dispatcher[ResourceLoop, T](reconciler, input.get, manager, PermitScope.semaphore(semaphore))
-    }
-  }
-}
-
-// Fans out a single stream of Input[Id] to a Loop instance per Id
-class Dispatcher[Loop[_], T<:ObjectResource](
-  reconciler: Reconciler[ResourceState[T]],
-  getResource: Id[T] => Task[Option[ResourceState[T]]],
-  manager: ResourceLoop.Manager[Loop, T],
-  permitScope: PermitScope
-) extends Logging {
-  private val error = Promise[Unit]()
-  private def onError(throwable: Throwable) = Task { error.tryFailure(throwable) }.void
-
-  def run(input: Observable[Event[Id[T]]]): Task[Unit] = {
-    Task.race(Task.fromFuture(error.future), runloop(input)).void
+// Kicks off reconcile actions for all tracked resources,
+// supporting periodic reconciles and a concurrency limit
+private[foperator] object Dispatcher extends Logging {
+  def run[IO[_], C, T](
+    client: C,
+    input: ReconcileSource[IO, T],
+    reconcile: Reconciler.Fn[IO, C, T],
+    opts: ReconcileOptions,
+  )(implicit io: Concurrent[IO], timer: Timer[IO], cs: ContextShift[IO], res: ObjectResource[T]): IO[Unit] = {
+    Dispatcher.resource[IO, C, T](
+      client,
+      input,
+      reconcile,
+      opts
+    ).use(identity)
   }
 
-  private def runloop(input: Observable[Event[Id[T]]]): Task[Unit] = {
-    Task(logger.trace("Starting runloop")) >>
-    input.mapAccumulate(Map.empty[Id[T],Loop[T]]) { (map:Map[Id[T],Loop[T]], input) =>
-      val result: (Map[Id[T],Loop[T]], Task[Unit]) = input match {
-        case Event.HardDeleted(id) => {
-          logger.trace(s"Removing resource loop for ${id}")
-          (map - id, map.get(id).map(manager.destroy).getOrElse(Task.unit))
-        }
-        case Event.Updated(id) => {
-          map.get(id) match {
-            case Some(loop) => {
-              logger.trace(s"Triggering update for ${id}")
-              (map, manager.update(loop))
+  private [foperator] def main[IO[_], K](
+    state: MVar2[IO, StateMap[IO, K]],
+    error: Deferred[IO, Throwable],
+    loop: ReconcileLoop[IO, K],
+    input: Stream[IO, K]
+  )(implicit io: Concurrent[IO]): IO[Unit] = {
+    val process: IO[Unit] = {
+      io.delay(logger.debug("Starting runloop")) >>
+        input.evalMap[IO, Unit] { id =>
+          state.modify_ { stateMap =>
+            (stateMap.get(id) match {
+              // if running, mark dirty. otherwise, spawn a reconcile loop
+              case Some((state, fiber)) => {
+                loop.markDirty(state).map { s =>
+                  logger.debug("State ({}): {} -> {}", id, state, s)
+                  (s, fiber)
+                }
+              }
+              case None => {
+                logger.debug("Spawning reconcile loop for {}", id)
+                val task = io.handleErrorWith(loop.run(id))(error.complete)
+                io.start(task).map(fiber => (Reconciling, fiber))
+              }
+            }).map { newState =>
+              stateMap.updated(id, newState)
             }
-            case None => {
-              logger.trace(s"Creating resource loop for ${id}")
-              val loop = manager.create(getResource(id), reconciler, permitScope, onError)
-              (map.updated(id, loop), Task.unit)
+          }
+        }.compile.drain
+    }
+    io.race(error.get.flatMap(io.raiseError[Unit]), process).void
+  }
+
+  def resource[IO[_], C, T](
+    client: C,
+    input: ReconcileSource[IO, T],
+    reconcile: Reconciler.Fn[IO, C, T],
+    opts: ReconcileOptions,
+
+    // used in tests:
+    stateOverride: Option[MVar2[IO, StateMap[IO, Id[T]]]] = None,
+  )(implicit io: Concurrent[IO], timer: Timer[IO], cs: ContextShift[IO], res: ObjectResource[T]): Resource[IO, IO[Unit]] =
+  {
+    def retryDelay(count: ErrorCount) = opts.retryDelay(count.value)
+    val acquire = for {
+      state <- stateOverride.fold(MVar[IO].of(Map.empty: StateMap[IO, Id[T]]))(io.pure)
+      error <- Deferred[IO, Throwable]
+      semaphore <- Semaphore[IO](opts.concurrency.toLong)
+    } yield {
+      val updater = new Updater(state)
+      def action(id: Id[T]): IO[Option[ReconcileResult]] =
+        semaphore.withPermit(input.get(id).flatMap {
+          case None => io.pure(None)
+          case Some(r) => for {
+            _ <- io.delay(logger.info("[{}] Reconciling {} v{}", res.kind, id, res.version(r.raw).getOrElse(0)))
+            result <- reconcile(client, r)
+          } yield Some(result)
+        })
+
+      val resourceLoop = new ReconcileLoop.Impl[IO, Id[T]](action, updater, retryDelay)
+      (main(state, error, resourceLoop, input.ids), cancel(state))
+    }
+    Resource(acquire)
+  }
+
+  // NewState is State plus the Terminate option, which
+  // removes this resource from being tracked
+  sealed trait NewState[+IO[_]]
+  case object Terminate extends NewState[Nothing]
+
+  sealed trait State[+IO[_]] extends NewState[IO]
+  case object Reconciling extends State[Nothing] with NewState[Nothing]
+  case object Dirty extends State[Nothing] with NewState[Nothing]
+  case class Waiting[IO[_]](wakeup: IO[Unit]) extends State[IO]
+
+  // updater for an individual resource
+  trait StateUpdater[IO[_], K] {
+    def apply[T](key: K, fn: State[IO] => IO[(NewState[IO], T)]): IO[T]
+  }
+
+  // dispatcher state
+  type StateMap[IO[_], K] = Map[K, (State[IO], Fiber[IO, Unit])]
+
+
+  // adapt the full dispatcher state to provide an individual updater
+  private [foperator] class Updater[IO[_], K](state: MVar2[IO, StateMap[IO, K]])
+    (implicit io: Concurrent[IO]) extends StateUpdater[IO, K]
+  {
+    override def apply[T](key: K, fn: State[IO] => IO[(NewState[IO], T)]): IO[T] = {
+      state.modify[T] { stateMap =>
+        stateMap.get(key) match {
+          case None => io.raiseError(new RuntimeException(s"state ${key} missing from dispatcher map"))
+          case Some((current, fiber)) => {
+            fn(current).map {
+              // NOTE: when terminating, we expect the fiber to also complete.
+              // we can't join it here because it corresponds to the fiber calling
+              // this method, causing a deadlock
+              case (Terminate, ret) => {
+                logger.debug("State ({}): {} -> {}", key, current, Terminate)
+                (stateMap.removed(key), ret)
+              }
+              case (newState: State[IO], ret) => {
+                logger.debug("State ({}): {} -> {}", key, current, newState)
+                (stateMap.updated(key, (newState, fiber)), ret)
+              }
             }
           }
         }
       }
-      result
-    }.mapEval(identity).completedL
+    }
+  }
+
+  private def cancel[IO[_], K](state: MVar2[IO, StateMap[IO, K]])(implicit io: Concurrent[IO], res: ObjectResource[_]): IO[Unit] = {
+    state.tryRead.flatMap {
+      case None => io.delay(logger.warn("[{}] Can't cancel active fibers; state is empty", res.kind))
+      case Some(stateMap) => {
+        logger.info("[{}] Cancelling dispatcher loop ({} active fibers)", res.kind, stateMap.size)
+        val fibers = stateMap.values.map(_._2).toList
+        fibers.traverse_(f => f.cancel)
+      }
+    }
   }
 }

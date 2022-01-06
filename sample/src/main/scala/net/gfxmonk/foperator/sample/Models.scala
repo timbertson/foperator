@@ -1,7 +1,7 @@
 package net.gfxmonk.foperator.sample
 
 import cats.Eq
-import net.gfxmonk.foperator.{Id, Update}
+import net.gfxmonk.foperator.Id
 import play.api.libs.json.{Format, JsNull, JsSuccess, Json}
 import skuber.ResourceSpecification.{Names, Scope}
 import skuber.apiextensions.CustomResourceDefinition
@@ -12,12 +12,13 @@ object Models {
   case class GreetingSpec(name: Option[String], surname: Option[String])
   case class GreetingStatus(message: String, people: List[String])
   object GreetingStatus {
-    def peopleIds(update: Update.Status[Greeting, GreetingStatus]): List[Id[Person]] = update.status.people.map { name =>
-      Id.createUnsafe(namespace = update.initial.metadata.namespace, name = name)
+    def peopleIds(id: Id[Greeting], update: GreetingStatus): List[Id[Person]] = update.people.map { name =>
+      Id.apply[Person](namespace = id.namespace, name = name)
     }
   }
   implicit val eqGreetingSpec: Eq[GreetingSpec] = Eq.fromUniversalEquals
   implicit val eqGreetingStatus: Eq[GreetingStatus] = Eq.fromUniversalEquals
+  implicit val eqMeta: Eq[ObjectMeta] = Eq.fromUniversalEquals
 
   type Greeting = CustomResource[GreetingSpec,GreetingStatus]
 
