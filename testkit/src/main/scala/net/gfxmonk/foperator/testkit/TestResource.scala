@@ -4,7 +4,7 @@ import cats.Eq
 import net.gfxmonk.foperator.Id
 import net.gfxmonk.foperator.types.{HasStatus, ObjectResource}
 
-import java.time.ZonedDateTime
+import java.time.Instant
 import scala.reflect.ClassTag
 
 // TestClient can use any model with valid typeclasses, but this is handy for simple tests
@@ -29,17 +29,19 @@ object TestResource {
     new ResourceInstance[Sp,St]
   }
 
-  class ResourceInstance[Sp, St](implicit eqSt: Eq[St], classSp: ClassTag[Sp], classSt: ClassTag[St]) extends ObjectResource[TestResource[Sp, St]] with HasStatus[TestResource[Sp,St], St] {
+  class ResourceInstance[Sp, St](implicit eqSt: Eq[St], classSp: ClassTag[Sp], classSt: ClassTag[St])
+    extends ObjectResource[TestResource[Sp, St]]
+    with HasStatus[TestResource[Sp,St], St]
+  {
     type T = TestResource[Sp,St]
     override def id(t: T): Id[T] = Id.apply[T]("default", t.name)
     override def kind: String = classOf[T].getSimpleName
-    override def apiPrefix: String = s"${classOf[T].getCanonicalName}-${classSp.runtimeClass.getCanonicalName},${classSt.runtimeClass.getCanonicalName}/v1"
-    override def version(t: T): Option[Int] = t.meta.version
-    override def withVersion(t: T, newVersion: Int): T = t.copy(meta=t.meta.copy(version = Some(newVersion)))
+    override def version(t: T): String = t.meta.version.getOrElse("")
+    override def withVersion(t: T, newVersion: String): T = t.copy(meta=t.meta.copy(version = Some(newVersion)))
     override def finalizers(t: T): List[String] = t.meta.finalizers
     override def replaceFinalizers(t: T, f: List[String]): T = t.copy(meta=t.meta.copy(finalizers = f))
-    override def deletionTimestamp(t: T): Option[ZonedDateTime] = t.meta.deletionTimestamp
-    override def withDeleted(t: T, timestamp: ZonedDateTime): T = t.copy(meta=t.meta.copy(deletionTimestamp = Some(timestamp)))
+    override def isSoftDeleted(t: T): Boolean = t.meta.deletionTimestamp.isDefined
+    override def softDeletedAt(t: T, timestamp: Instant): T = t.copy(meta=t.meta.copy(deletionTimestamp = Some(timestamp)))
     override val eqStatus: Eq[St] = eqSt
     override def status(t: T): Option[St] = t.status
     override def withStatus(t: T, status: St): T = t.copy(status=Some(status))
@@ -47,12 +49,11 @@ object TestResource {
 }
 
 case class TestMeta(
-  version: Option[Int]=None,
+  version: Option[String]=None,
   finalizers: List[String]=Nil,
-  deletionTimestamp: Option[ZonedDateTime]=None)
+  deletionTimestamp: Option[Instant]=None)
 
 object TestMeta {
   def empty = TestMeta()
   implicit val eq: Eq[TestMeta] = Eq.fromUniversalEquals
 }
-

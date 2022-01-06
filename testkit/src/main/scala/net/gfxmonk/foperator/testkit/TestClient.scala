@@ -11,7 +11,7 @@ import net.gfxmonk.foperator.internal.{BackendCompanion, Broadcast, Logging}
 import net.gfxmonk.foperator.types._
 import net.gfxmonk.foperator.{Event, Id, ListOptions, Operations}
 
-import java.time.{Instant, ZoneOffset, ZonedDateTime}
+import java.time.Instant
 import java.util.concurrent.TimeUnit
 
 class TestClient[IO[_]: ContextShift](
@@ -64,19 +64,23 @@ object TestClient extends BackendCompanion[Task, TestClient[Task]] {
 
   def unsafe(): TestClient[Task] = apply[Task].runSyncUnsafe()(Scheduler.global, implicitly[CanBlock])
 
-  implicit def implicitEngine[IO[_], T](implicit io: Concurrent[IO], clock: Clock[IO], res: ObjectResource[T], eq: Eq[T]): Engine[IO, TestClient[IO], T]
+  implicit def implicitEngine[IO[_], T]
+    (implicit io: Concurrent[IO], clock: Clock[IO], res: ObjectResource[T], eq: Eq[T])
+  : Engine[IO, TestClient[IO], T]
   = new TestClientEngineImpl[IO, T]
 
-  implicit def implicitOps[IO[_], T](c: TestClient[IO])(implicit io: Concurrent[IO], cs: ContextShift[IO], clock: Clock[IO], res: ObjectResource[T], eq: Eq[T]): Operations[IO, TestClient[IO], T]
+  implicit def implicitOps[IO[_], T](c: TestClient[IO])
+    (implicit io: Concurrent[IO], cs: ContextShift[IO], engine: Engine[IO, TestClient[IO], T], res: ObjectResource[T])
+  : Operations[IO, TestClient[IO], T]
   = new Operations(c)
 
 }
 
 class TestClientError(val e: ClientError) extends RuntimeException(e.throwable)
 
-case class ResourceKind(apiVersion: String, kind: String)
+case class ResourceKind(kind: String)
 object ResourceKind {
-  def forClass[T](implicit res: HasKind[T]) = new ResourceKind(res.apiPrefix, res.kind)
+  def forClass[T](implicit res: HasKind[T]) = new ResourceKind(res.kind)
   implicit val eq: Eq[ResourceKind] = Eq.fromUniversalEquals
 }
 case class ResourceKey(kind: ResourceKind, id: Id[Any])
@@ -113,9 +117,15 @@ class TestClientEngineImpl[IO[_], T]
 
   private val _notFound = new TestClientError(ClientError.NotFound(new RuntimeException("not found")))
 
-  override def write(c: TestClient[IO], t: T): IO[T] = {
-    val nextVersion = res.withVersion(t, res.version(t).getOrElse(0) + 1)
-    c.modifyState { stateMap =>
+  override def write(c: TestClient[IO], t: T): IO[Unit] = {
+    val nextVersion = {
+      val newVersion = res.version(t) match {
+        case "" => 1
+        case other => other.toInt + 1
+      }
+      res.withVersion(t, newVersion.toString)
+    }
+    c.modifyState_ { stateMap =>
       val id = res.id(t)
       val key = ResourceKey.id(id)
 
@@ -125,10 +135,10 @@ class TestClientEngineImpl[IO[_], T]
           io.pure((stateMap.updated(key, t), Some(Event.Updated((key, t)))))
         }
         case Some(existing) => {
-          if (res.version(t).getOrElse(0) =!= res.version(existing).getOrElse(0)) {
+          if (res.version(t) =!= res.version(existing)) {
             logger.debug("[{}] version conflict writing version {} (current version: {})", res.id(t), res.version(t), res.version(existing))
             io.raiseError(_versionConflict)
-          } else if (res.deletionTimestamp(t).isDefined && res.finalizers(t).isEmpty) {
+          } else if (res.isSoftDeleted(t) && res.finalizers(t).isEmpty) {
             logger.debug("[{}] soft-deleted resource has no remaining finalizers; deleting it", res.id(t), res.version(nextVersion))
             io.pure((stateMap.removed(key), Some(Event.Deleted((key, t)))))
           } else if (existing === t) {
@@ -146,14 +156,13 @@ class TestClientEngineImpl[IO[_], T]
         case (newState, event) => {
           // in the case of deletion, we just pretend what you wrote is still there
           // (this is what k8s does, since GC is asynchronous)
-          val written = _get(newState, id).getOrElse(t)
-          event.traverse(c.publish).as((newState, written))
+          event.traverse(c.publish).as(newState)
         }
       }
     }
   }
 
-  override def writeStatus[St](c: TestClient[IO], t: T, st: St)(implicit sub: HasStatus[T, St]): IO[T] = write(c, sub.withStatus(t, st))
+  override def writeStatus[St](c: TestClient[IO], t: T, st: St)(implicit sub: HasStatus[T, St]): IO[Unit] = write(c, sub.withStatus(t, st))
 
   override def classifyError(e: Throwable): ClientError = e match {
     case ce: TestClientError => ce.e
@@ -170,12 +179,12 @@ class TestClientEngineImpl[IO[_], T]
             val event: Event[TestClient.Entry] = Event.Deleted((key, existing))
             c.publish(event).as(stateMap.removed(key))
           } else {
-            if (res.deletionTimestamp(existing).isDefined) {
+            if (res.isSoftDeleted(existing)) {
               // no-op
               io.pure(stateMap)
             } else {
               clock.realTime(TimeUnit.SECONDS).flatMap { seconds =>
-                val updated = res.withDeleted(existing, ZonedDateTime.ofInstant(Instant.ofEpochSecond(seconds), ZoneOffset.UTC))
+                val updated = res.softDeletedAt(existing, Instant.ofEpochSecond(seconds))
                 val event: Event[TestClient.Entry] = Event.Updated((key, updated))
                 c.publish(event).as(stateMap.updated(key, updated))
               }
