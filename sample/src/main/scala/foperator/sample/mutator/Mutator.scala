@@ -3,17 +3,19 @@ package foperator.sample.mutator
 import cats.Eq
 import cats.effect.ExitCode
 import cats.implicits._
+import foperator._
+import foperator.backend.skuber_backend.Skuber
+import foperator.backend.skuber_backend.implicits._
+import foperator.internal.Logging
+import foperator.sample.Models.{GreetingSpec, PersonSpec}
+import foperator.sample.Models.Skuber._
+import foperator.sample.PrettyPrint.Implicits._
+import foperator.sample.{AdvancedOperator, PrettyPrint, SimpleOperator}
+import foperator.types.{Engine, ObjectResource}
 import monix.eval.{Task, TaskApp}
 import monix.execution.Scheduler
 import monix.reactive.MulticastStrategy
 import monix.reactive.subjects.ConcurrentSubject
-import foperator._
-import foperator.backend.skuber_backend.Skuber
-import foperator.internal.Logging
-import foperator.sample.Models.{Greeting, GreetingSpec, Person, PersonSpec}
-import foperator.sample.PrettyPrint.Implicits._
-import foperator.sample.{AdvancedOperator, PrettyPrint, SimpleOperator}
-import foperator.types.{Engine, ObjectResource}
 import skuber.CustomResource
 
 import java.util.concurrent.TimeUnit
@@ -36,7 +38,7 @@ object Simple extends TaskApp with Logging {
 object Advanced extends TaskApp {
   override def run(args: List[String]): Task[ExitCode] = {
     val client = Skuber()
-    val advanced = new AdvancedOperator(client)
+    val advanced = new AdvancedOperator(client.ops)
     advanced.install >> Mutator.withResourceMirrors(client) { (greetings, people) =>
       Task.parZip2(
         advanced.runWith(greetings, people),

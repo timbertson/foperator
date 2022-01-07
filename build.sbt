@@ -81,14 +81,14 @@ lazy val sample = (project in file("sample"))
     name := "foperator-sample",
     libraryDependencies ++= Seq(logback, scalatest),
     packMain := Map(
-      "simple" -> "foperator.sample.SimpleMain",
-      "advanced" -> "foperator.sample.AdvancedMain",
+      "simple" -> "foperator.sample.SimpleOperator",
+      "advanced" -> "foperator.sample.AdvancedOperator",
       "simple-mutator" -> "foperator.sample.mutator.Simple",
       "advanced-mutator" -> "foperator.sample.mutator.Advanced",
       "mutator" -> "foperator.sample.mutator.Standalone",
       "mutator-test" -> "foperator.sample.mutator.MutatorTest",
       "mutator-test-live" -> "foperator.sample.MutatorTestLive",
     ),
-  ).dependsOn(core, testkit, skuber).enablePlugins(PackPlugin)
+  ).dependsOn(core, testkit, skuber, kclient).enablePlugins(PackPlugin)
 
 lazy val all = (project in file(".")).settings(hiddenProjectSettings).aggregate(testkit, tests, skuber, kclient, sample)

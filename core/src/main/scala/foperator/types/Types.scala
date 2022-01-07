@@ -40,6 +40,16 @@ trait HasStatus[T, Status] {
   def withStatus(obj: T, status: Status): T
 }
 
+// Not required by foperator itself, but provided by backends for convenience
+trait HasSpec[T, Spec] {
+  def spec(obj: T): Spec
+  def withSpec(obj: T, spec: Spec): T
+}
+
+trait HasCustomResourceDefinition[T, D] {
+  def customResourceDefinition: D
+}
+
 sealed trait ClientError {
   def throwable: Throwable
 }

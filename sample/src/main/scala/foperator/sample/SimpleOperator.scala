@@ -3,8 +3,10 @@ package foperator.sample
 import cats.effect.ExitCode
 import cats.implicits._
 import foperator.backend.skuber_backend.Skuber
+import foperator.backend.skuber_backend.implicits._
 import monix.eval.{Task, TaskApp}
 import foperator.sample.Models._
+import foperator.sample.Models.Skuber._
 import skuber.apiextensions.CustomResourceDefinition
 
 object SimpleOperator extends TaskApp {

@@ -2,28 +2,27 @@ package foperator.sample
 
 import cats.effect.ExitCode
 import cats.implicits._
-import monix.eval.{Task, TaskApp}
 import foperator._
 import foperator.backend.skuber_backend.Skuber
+import foperator.backend.skuber_backend.implicits._
 import foperator.internal.Logging
+import foperator.sample.Models.Skuber._
 import foperator.sample.PrettyPrint.Implicits._
-import foperator.sample.Models._
 import foperator.types.Engine
+import monix.eval.{Task, TaskApp}
 import skuber.apiextensions.CustomResourceDefinition
 
 import scala.util.Try
 
-object AdvancedMain {
-  def main(args: Array[String]): Unit = {
-    new AdvancedOperator(Skuber()).main(args)
+object AdvancedOperator extends TaskApp {
+  val finalizerName = s"AdvancedMain.${Models.apiGroup}"
+
+  override def run(args: List[String]): Task[ExitCode] = {
+    new AdvancedOperator(Skuber().ops).run.as(ExitCode.Success)
   }
 }
 
-object AdvancedOperator {
-  val finalizerName = s"AdvancedMain.${Models.greetingSpec.apiGroup}"
-}
-
-class AdvancedOperator[C](client: C)
+class AdvancedOperator[C](ops: Operations.Builder[Task, C])
   (implicit
     // note: this individual engine listing is only needed when you're
     // writing a client-agnostic operator (which we do use for tests)
@@ -31,19 +30,17 @@ class AdvancedOperator[C](client: C)
     engineG: Engine[Task, C, Greeting],
     engineD: Engine[Task, C, CustomResourceDefinition],
   )
-  extends TaskApp with Logging {
+  extends Logging {
   import AdvancedOperator._
   import Models._
 
-  val personOps: Operations[Task, C, Person] = Operations(client).apply[Person]
-  val greetingOps: Operations[Task, C, Greeting] = Operations(client).apply[Greeting]
   val reconcileOpts = ReconcileOptions(refreshInterval = None, concurrency = 5)
 
-  override def run(args: List[String]): Task[ExitCode] = {
+  def run: Task[Unit] = {
     install >>
-    greetingOps.mirror { greetings =>
-      personOps.mirror { people =>
-        runWith(greetings, people).map(_ => ExitCode.Success)
+    ops[Greeting].mirror { greetings =>
+      ops[Person].mirror { people =>
+        runWith(greetings, people)
       }
     }
   }
@@ -56,9 +53,8 @@ class AdvancedOperator[C](client: C)
   }
 
   def install = {
-    val ops = Operations(client).apply[CustomResourceDefinition]
-    ops.forceWrite(greetingCrd).void >>
-    ops.forceWrite(personCrd).void
+    ops[CustomResourceDefinition].forceWrite(greetingCrd) >>
+    ops[CustomResourceDefinition].forceWrite(personCrd)
   }
 
   // should this greeting match this person?
@@ -71,6 +67,10 @@ class AdvancedOperator[C](client: C)
     all.get(id).toRight(new RuntimeException(s"Person not active: $id")).toTry
   }
 
+  def peopleIds(id: Id[Greeting], status: GreetingStatus): List[Id[Person]] = status.people.map { name =>
+    Id[Person](namespace = id.namespace, name = name)
+  }
+
   // Given a greeting update, apply it to the cluster.
   // This differs from the default Operations.applyUpdate because
   // it also installs finalizers on referenced people.
@@ -79,7 +79,7 @@ class AdvancedOperator[C](client: C)
     (implicit pp: PrettyPrint[GreetingStatus]): Greeting => Task[GreetingStatus] = { greeting =>
   fn(greeting).flatMap { status =>
     logger.info(s"Reconciled greeting ${Id.of(greeting)} to status: ${pp.pretty(status)}")
-    val ids = GreetingStatus.peopleIds(Id.of(greeting), status)
+    val ids = peopleIds(Id.of(greeting), status)
     val findPeople: Task[List[Person]] = {
       peopleMirror.active.flatMap { all =>
         ids.traverse(id => Task.fromTry(findPerson(all, id)))
@@ -155,7 +155,7 @@ class AdvancedOperator[C](client: C)
       }
     })
 
-    greetingOps.runReconcilerWithInput(input, reconciler, reconcileOpts)
+    ops[Greeting].runReconcilerWithInput(input, reconciler, reconcileOpts)
   }
 
   private def personController(
@@ -174,6 +174,6 @@ class AdvancedOperator[C](client: C)
     }
 
     val reconciler = Reconciler.builder[Task, C, Person].empty.withFinalizer(finalizerName, finalize)
-    personOps.runReconcilerWithInput(peopleMirror, reconciler, reconcileOpts)
+    ops[Person].runReconcilerWithInput(peopleMirror, reconciler, reconcileOpts)
   }
 }

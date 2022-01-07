@@ -2,11 +2,10 @@ package foperator.backend.skuber_backend
 
 import cats.Eq
 import cats.implicits._
-import foperator
 import foperator.Id
 import foperator.types._
 import skuber.apiextensions.CustomResourceDefinition
-import skuber.{CustomResource, ObjectMeta, ResourceDefinition}
+import skuber.{CustomResource, NonCoreResourceSpecification, ObjectMeta, ResourceDefinition, objResourceToRef}
 
 import java.time.{Instant, ZoneOffset, ZonedDateTime}
 
@@ -65,14 +64,22 @@ package object implicits extends foperator.CommonImplicits {
   // TODO is there a nice way to provide subresources for non-custom resources?
   implicit def crSubresources[Sp,St](
     implicit rd: skuber.ResourceDefinition[skuber.CustomResource[Sp, St]],
-    eqSt: Eq[St]
-  ) : HasStatus[skuber.CustomResource[Sp, St], St] =
+    eqSt: Eq[St],
+  )
+  : HasStatus[skuber.CustomResource[Sp, St], St]
+    with HasSpec[skuber.CustomResource[Sp,St], Sp] =
   {
     CustomResource.statusMethodsEnabler[skuber.CustomResource[Sp, St]] // runtime check
-    new HasStatus[skuber.CustomResource[Sp, St], St] {
+    new HasStatus[skuber.CustomResource[Sp, St], St] with HasSpec[skuber.CustomResource[Sp,St], Sp] {
       override val eqStatus: Eq[St] = eqSt
+
       override def status(obj: CustomResource[Sp, St]): Option[St] = obj.status
+
       override def withStatus(obj: CustomResource[Sp, St], status: St): CustomResource[Sp, St] = obj.copy(status=Some(status))
+
+      override def spec(obj: CustomResource[Sp, St]): Sp = obj.spec
+
+      override def withSpec(obj: CustomResource[Sp, St], spec: Sp): CustomResource[Sp, St] = obj.copy(spec=spec)
     }
   }
 }

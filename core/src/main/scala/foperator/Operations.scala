@@ -11,7 +11,7 @@ class Operations[IO[_], C, T](c: C)
   extends Logging
 {
   def updateStatus[St](original: T, st: St)
-    (implicit sub: HasStatus[T, St]): IO[T] = {
+    (implicit sub: HasStatus[T, St]): IO[Unit] = {
     implicit val eq = sub.eqStatus
     if (sub.status(original).exists(_ === st)) {
       io.pure(original)
@@ -21,12 +21,12 @@ class Operations[IO[_], C, T](c: C)
     }
   }
 
-  def write(t: T): IO[T] = {
+  def write(t: T): IO[Unit] = {
     logger.debug(s"Writing ${res.id(t)}")
     e.write(c, t)
   }
 
-  def update(t: T)(block: T => T)(implicit eq: Eq[T]): IO[T] = {
+  def update(t: T)(block: T => T)(implicit eq: Eq[T]): IO[Unit] = {
     val updated = block(t)
     if (t === updated) {
       io.pure(t)
@@ -54,22 +54,20 @@ class Operations[IO[_], C, T](c: C)
     e.read(c, id)
   }
 
-  def forceWrite(t: T): IO[T] = {
+  def forceWrite(t: T): IO[Unit] = {
     val id = res.id(t)
     e.read(c, id).flatMap {
       case None => {
         logger.debug("[{}] forceWrite: no current version found", id)
-        e.write(c, t)
+        write(t)
       }
       case Some(current) => {
         // resource exists, update based on the current resource version
         val overwrite = res.withVersion(t, res.version(current))
-        logger.debug("[{}] forceWrite: overwriting current version {}", id, res.version(overwrite))
-        e.write(c, overwrite)
+        val newVersion = res.version(overwrite)
+        logger.debug("[{}] forceWrite: overwriting current version {}", id, newVersion)
+        write(overwrite)
       }
-    }.map { result =>
-      logger.info(s"Force-wrote ${id} v${res.version(result)}")
-      result
     }
   }
 

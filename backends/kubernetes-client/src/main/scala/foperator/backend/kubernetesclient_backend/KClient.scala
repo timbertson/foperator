@@ -203,14 +203,13 @@ object KClient {
 
 class KClientCompanion[IO[_]](implicit cs: ContextShift[IO], ce: ConcurrentEffect[IO]) extends BackendCompanion[IO, KClient[IO]] {
 
-  def wrap(underlying: KubernetesClient[IO]) = new KClient(underlying)
+  def wrap(underlying: KubernetesClient[IO]): KClient[IO] = new KClient(underlying)
 
-  def apply(config: KubeConfig) = KubernetesClient[IO](config)
+  def apply(config: KubeConfig): Resource[IO, KClient[IO]] = KubernetesClient[IO](config).map(wrap)
 
-  def apply[F[_]: ConcurrentEffect: ContextShift](config: F[KubeConfig]): Resource[F, KubernetesClient[F]] = KubernetesClient(config)
+  def apply(config: IO[KubeConfig]): Resource[IO, KClient[IO]] = KubernetesClient(config).map(wrap)
 
   type Ops[T] = Operations[IO, KClient[IO], T]
-
 }
 
 

@@ -7,8 +7,9 @@ import com.goyeau.kubernetes.client.crd.{CustomResource, CustomResourceList}
 import io.circe.{Decoder, Encoder}
 import io.k8s.api.core.v1.{Pod, PodList, PodStatus}
 import io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
-import foperator
 import foperator.Id
+import foperator.types.{HasCustomResourceDefinition, HasSpec}
+import io.k8s.apiextensionsapiserver.pkg.apis.apiextensions.v1.{CustomResourceDefinition, CustomResourceDefinitionList, CustomResourceDefinitionStatus}
 import org.http4s.Status
 
 import scala.reflect.ClassTag
@@ -34,7 +35,7 @@ package object implicits extends foperator.CommonImplicits {
       cantUpdateStatus[IO, Pod]
     )
 
-  implicit def implicitCustomResource[IO[_], Sp : Encoder: Decoder, St: Encoder: Decoder]
+  implicit def implicitCustomResourceResource[IO[_], Sp : Encoder: Decoder, St: Encoder: Decoder]
     (implicit crd: CrdContextFor[CustomResource[Sp, St]])
     : ResourceImpl[IO, St, CustomResource[Sp,St], CustomResourceList[Sp, St]]
     = new ResourceImpl[IO, St, CustomResource[Sp, St], CustomResourceList[Sp, St]](
@@ -45,6 +46,26 @@ package object implicits extends foperator.CommonImplicits {
         client.customResources[Sp,St](crd.ctx).namespace(id.namespace).updateStatus(id.name, t)
       }
     )
+
+  // TODO implement in ResourceImpl
+  implicit def implicitCustomResourceSpec[Sp,St]
+    (implicit crd: CrdContextFor[CustomResource[Sp, St]])
+    : HasSpec[CustomResource[Sp, St], Sp]
+  = new HasSpec[CustomResource[Sp, St], Sp] {
+    override def spec(obj: CustomResource[Sp, St]): Sp = obj.spec
+
+    override def withSpec(obj: CustomResource[Sp, St], spec: Sp): CustomResource[Sp, St] = obj.copy(spec = spec)
+  }
+
+  // CRDs aren't namespaced, so some of this is nonsensical...
+  implicit def implicitCrdResource[IO[_]: Async]: ResourceImpl[IO, CustomResourceDefinitionStatus, CustomResourceDefinition, CustomResourceDefinitionList]
+  = new ResourceImpl[IO, CustomResourceDefinitionStatus, CustomResourceDefinition, CustomResourceDefinitionList](
+    ???,
+//    _.customResourceDefinitions,
+    (o, m) => o.copy(metadata=Some(m)),
+    (o, s) => o.copy(status=Some(s)),
+    cantUpdateStatus[IO, CustomResourceDefinition]
+  )
 
   // TODO remaining builtin types
 }

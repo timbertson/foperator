@@ -4,12 +4,12 @@ import cats.Eq
 import cats.effect.concurrent.{MVar, MVar2}
 import cats.effect.{Clock, Concurrent, ContextShift}
 import cats.implicits._
-import monix.eval.Task
-import monix.execution.Scheduler
-import monix.execution.schedulers.CanBlock
 import foperator.internal.{BackendCompanion, Broadcast, Logging}
 import foperator.types._
 import foperator.{Event, Id, ListOptions, Operations}
+import monix.eval.Task
+import monix.execution.Scheduler
+import monix.execution.schedulers.CanBlock
 
 import java.time.Instant
 import java.util.concurrent.TimeUnit
@@ -19,9 +19,7 @@ class TestClient[IO[_]: ContextShift](
   val topic: Broadcast[IO, Event[TestClient.Entry]],
   val auditors: List[Event[TestClient.Entry] => IO[Unit]],
 )(implicit io: Concurrent[IO]) extends Logging {
-  def ops[T](implicit res: ObjectResource[T], e: Engine[IO, TestClient[IO], T]) = {
-    new Operations[IO, TestClient[IO], T](this)
-  }
+  val ops = Operations[IO, TestClient[IO]](this)
 
   def readState = state.read
 

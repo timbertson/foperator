@@ -4,17 +4,18 @@ import cats.data.Validated
 import cats.effect.concurrent.Deferred
 import cats.implicits._
 import foperator.backend.skuber_backend.Skuber
-import monix.eval.Task
-import monix.execution.Scheduler
-import monix.execution.atomic.Atomic
-import monix.execution.schedulers.TestScheduler
+import foperator.backend.skuber_backend.implicits._
 import foperator.internal.Logging
-import foperator.sample.Models._
+import foperator.sample.Models.Skuber._
 import foperator.sample.PrettyPrint.Implicits._
 import foperator.sample.mutator.Mutator.Action
 import foperator.sample.{AdvancedOperator, PrettyPrint}
 import foperator.testkit.{TestClient, TestSchedulerUtil}
 import foperator.{ResourceMirror, ResourceState}
+import monix.eval.Task
+import monix.execution.Scheduler
+import monix.execution.atomic.Atomic
+import monix.execution.schedulers.TestScheduler
 import skuber.{ListResource, ObjectResource}
 
 import scala.concurrent.duration._
@@ -129,7 +130,7 @@ object MutatorTest extends Logging {
       client.ops[Person].mirror { people =>
         for {
           // start the operator first, then complete the `ready` deferred
-          fiber <- new AdvancedOperator(client).runWith(greetings, people).start
+          fiber <- new AdvancedOperator(client.ops).runWith(greetings, people).start
           _ <- ready.complete((greetings, people))
           _ <- fiber.join
         } yield ()
@@ -205,7 +206,7 @@ object MutatorTest extends Logging {
 
     (deleteAll >> Mutator.withResourceMirrors(client) { (greetings, people) =>
       val mutator = new Mutator(client, greetings, people)
-      val main = new AdvancedOperator(client).runWith(greetings, people)
+      val main = new AdvancedOperator(client.ops).runWith(greetings, people)
 
       // In parallel with main, we also trace when we see updates to resources.
       // This lets validate check that _some_ update has been seen since the last action,

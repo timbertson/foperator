@@ -4,10 +4,11 @@ import cats.data.{NonEmptyList, Validated, ValidatedNel}
 import cats.implicits._
 import monix.eval.Task
 import foperator.internal.Logging
-import foperator.sample.Models._
+import foperator.sample.Models.Skuber._
 import foperator.sample.PrettyPrint.Implicits._
 import foperator.sample.{AdvancedOperator, PrettyPrint, SimpleOperator}
 import foperator.{Id, ResourceState}
+import foperator.backend.skuber_backend.implicits._
 
 class StateValidator(people: Map[String, ResourceState[Person]], greetings: Map[String, ResourceState[Greeting]]) extends Logging {
   case class ValidationError(context: List[String], errors: List[String])
