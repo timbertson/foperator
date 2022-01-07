@@ -84,7 +84,7 @@ The use of typeclasses means foperator can trivially support multiple backends, 
 
 One common issue is when an implicit is not found, e.g. "No implicits found for e: Engine[Task, TestClient[Task], CustomResourceDefinition]"
 
-Most of the time, an implicit will become available when you import e.g. `net.gfxmonk.foperator.skuberengine.implicits._` (for the Skuber backend). If not, it often means that there's an implicit missing somewhere in the chain.
+Most of the time, an implicit will become available when you import e.g. `foperator.skuberengine.implicits._` (for the Skuber backend). If not, it often means that there's an implicit missing somewhere in the chain.
 
 In these cases, it's useful to dig into the implicit chain. Firstly, figure out the method which _ought_ to provide this implicit. In this case, it's `TestClient.implicitEngine`. Then try to invoke that explicitly, by adding:
 

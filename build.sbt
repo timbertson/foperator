@@ -81,13 +81,13 @@ lazy val sample = (project in file("sample"))
     name := "foperator-sample",
     libraryDependencies ++= Seq(logback, scalatest),
     packMain := Map(
-      "simple" -> "net.gfxmonk.foperator.sample.SimpleMain",
-      "advanced" -> "net.gfxmonk.foperator.sample.AdvancedMain",
-      "simple-mutator" -> "net.gfxmonk.foperator.sample.mutator.Simple",
-      "advanced-mutator" -> "net.gfxmonk.foperator.sample.mutator.Advanced",
-      "mutator" -> "net.gfxmonk.foperator.sample.mutator.Standalone",
-      "mutator-test" -> "net.gfxmonk.foperator.sample.mutator.MutatorTest",
-      "mutator-test-live" -> "net.gfxmonk.foperator.sample.MutatorTestLive",
+      "simple" -> "foperator.sample.SimpleMain",
+      "advanced" -> "foperator.sample.AdvancedMain",
+      "simple-mutator" -> "foperator.sample.mutator.Simple",
+      "advanced-mutator" -> "foperator.sample.mutator.Advanced",
+      "mutator" -> "foperator.sample.mutator.Standalone",
+      "mutator-test" -> "foperator.sample.mutator.MutatorTest",
+      "mutator-test-live" -> "foperator.sample.MutatorTestLive",
     ),
   ).dependsOn(core, testkit, skuber).enablePlugins(PackPlugin)
 

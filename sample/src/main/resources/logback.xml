@@ -21,18 +21,18 @@
         <appender-ref ref="STDOUT" />
     </root>
 
-    <logger name="net.gfxmonk.foperator.sample" additivity="false">
+    <logger name="foperator.sample" additivity="false">
         <appender-ref ref="SAMPLE" />
     </logger>
 
-    <logger name="net.gfxmonk.foperator.sample.mutator.Mutator" additivity="false">
+    <logger name="foperator.sample.mutator.Mutator" additivity="false">
         <appender-ref ref="MUTATOR" />
     </logger>
-    <logger name="net.gfxmonk.foperator.sample.MutatorTest" additivity="false">
+    <logger name="foperator.sample.MutatorTest" additivity="false">
         <appender-ref ref="MUTATOR" />
     </logger>
 
-    <logger name="net.gfxmonk.foperator" level="INFO"/>
+    <logger name="foperator" level="INFO"/>
 
     <logger name="skuber.api" level="WARN"/>
 </configuration>
