@@ -2,7 +2,7 @@ package foperator.backend
 
 import cats.Eq
 import cats.effect.concurrent.Deferred
-import cats.effect.{Concurrent, ConcurrentEffect, ContextShift, Resource, Sync, Timer}
+import cats.effect.{Concurrent, ConcurrentEffect, ContextShift, Resource, Timer}
 import cats.implicits._
 import com.goyeau.kubernetes.client
 import com.goyeau.kubernetes.client.foperatorext.Types.{HasMetadata, ListOf, ResourceAPI, ResourceGetters}
@@ -40,8 +40,8 @@ object KubernetesClient {
     def apply(config: IO[KubeConfig]): Resource[IO, KubernetesClient[IO]] = client.KubernetesClient(config).map(wrap)
   }
 
-  implicit def engine[IO[_] : Concurrent : ContextShift : Timer, T<:HasMetadata, TList<:ListOf[T]]
-    (implicit api: HasResourceApi[IO, T, TList], res: ObjectResource[T], io: Sync[IO])
+  implicit def engine[IO[_] : Concurrent: Timer, T<:HasMetadata, TList<:ListOf[T]]
+    (implicit api: HasResourceApi[IO, T, TList], res: ObjectResource[T])
   : Engine[IO, KubernetesClient[IO], T]
   = new EngineImpl[IO, T, TList]
 
@@ -201,6 +201,7 @@ object KubernetesClient {
                     Some(Event.Updated(current))
                   }
                 }
+                case (None, None) => None // impossible, but humor the compiler
               }
             }
           }

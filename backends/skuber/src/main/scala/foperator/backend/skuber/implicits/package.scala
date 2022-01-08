@@ -5,9 +5,9 @@ import cats.implicits._
 import foperator.Id
 import foperator.types._
 import skuber.apiextensions.CustomResourceDefinition
-import skuber.{CustomResource, NonCoreResourceSpecification, ObjectMeta, ResourceDefinition, objResourceToRef}
+import skuber.{CustomResource, ObjectMeta, ResourceDefinition}
 
-import java.time.{Instant, ZoneOffset, ZonedDateTime}
+import java.time.{Instant, ZoneOffset}
 
 package object implicits extends foperator.CommonImplicits {
   // implicits that don't have a better place

@@ -24,7 +24,7 @@ lazy val core = (project in file("core"))
   .settings(
     name := "foperator-core",
     libraryDependencies ++= Seq(
-      "net.gfxmonk" %% "auditspec" % "0.1.0",
+      "net.gfxmonk" %% "auditspec" % "0.1.0" % "test",
     )
   )
 
