@@ -34,7 +34,7 @@ class DispatcherTest extends AsyncFunSpec with Logging {
       ctx <- spawn()
       // this write can occur off the test scheduler, since
       // the client hasn't started yet
-      _ <- ctx.client.ops[Resource].write(r1)
+      _ <- ctx.client.apply[Resource].write(r1)
       _ <- ctx.audit.reset.map(log => assert(log == List(Updated(r1.name))))
       _ <- ctx.tick()
       log <- ctx.audit.get
@@ -315,7 +315,7 @@ object DispatcherTest extends Logging {
     // to occur on the test scheduler. This includes writes initiated from
     // the test body.
 
-    private val ops = client.ops[Resource]
+    private val ops = client.apply[Resource]
 
     def write(r: Resource) = spawn(ops.forceWrite(r))
 
@@ -363,7 +363,7 @@ object DispatcherTest extends Logging {
         case Event.Updated(r) => audit.record(Updated(r.name))
         case Event.Deleted(r) => audit.record(Deleted(r.name))
       })
-      fiber <- client.ops[Resource].mirror { mirror =>
+      fiber <- client.apply[Resource].mirror { mirror =>
         Dispatcher
           .resource(client, mirror, wrapReconciler(audit, reconcile), opts, stateOverride = state)
           .use(identity)

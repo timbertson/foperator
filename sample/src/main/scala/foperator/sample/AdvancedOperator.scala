@@ -3,8 +3,8 @@ package foperator.sample
 import cats.effect.ExitCode
 import cats.implicits._
 import foperator._
-import foperator.backend.skuber_backend.Skuber
-import foperator.backend.skuber_backend.implicits._
+import foperator.backend.Skuber
+import foperator.backend.skuber.implicits._
 import foperator.internal.Logging
 import foperator.sample.Models.Skuber._
 import foperator.sample.PrettyPrint.Implicits._
@@ -18,11 +18,13 @@ object AdvancedOperator extends TaskApp {
   val finalizerName = s"AdvancedMain.${Models.apiGroup}"
 
   override def run(args: List[String]): Task[ExitCode] = {
-    new AdvancedOperator(Skuber().ops).run.as(ExitCode.Success)
+    Skuber().use { skuber =>
+      new AdvancedOperator(skuber).run.as(ExitCode.Success)
+    }
   }
 }
 
-class AdvancedOperator[C](ops: Operations.Builder[Task, C])
+class AdvancedOperator[C](client: Client[Task, C])
   (implicit
     // note: this individual engine listing is only needed when you're
     // writing a client-agnostic operator (which we do use for tests)
@@ -38,8 +40,8 @@ class AdvancedOperator[C](ops: Operations.Builder[Task, C])
 
   def run: Task[Unit] = {
     install >>
-    ops[Greeting].mirror { greetings =>
-      ops[Person].mirror { people =>
+    client[Greeting].mirror { greetings =>
+      client[Person].mirror { people =>
         runWith(greetings, people)
       }
     }
@@ -53,8 +55,8 @@ class AdvancedOperator[C](ops: Operations.Builder[Task, C])
   }
 
   def install = {
-    ops[CustomResourceDefinition].forceWrite(greetingCrd) >>
-    ops[CustomResourceDefinition].forceWrite(personCrd)
+    client[CustomResourceDefinition].forceWrite(greetingCrd) >>
+    client[CustomResourceDefinition].forceWrite(personCrd)
   }
 
   // should this greeting match this person?
@@ -155,7 +157,7 @@ class AdvancedOperator[C](ops: Operations.Builder[Task, C])
       }
     })
 
-    ops[Greeting].runReconcilerWithInput(input, reconciler, reconcileOpts)
+    client[Greeting].runReconcilerWithInput(input, reconciler, reconcileOpts)
   }
 
   private def personController(
@@ -174,6 +176,6 @@ class AdvancedOperator[C](ops: Operations.Builder[Task, C])
     }
 
     val reconciler = Reconciler.builder[Task, C, Person].empty.withFinalizer(finalizerName, finalize)
-    ops[Person].runReconcilerWithInput(peopleMirror, reconciler, reconcileOpts)
+    client[Person].runReconcilerWithInput(peopleMirror, reconciler, reconcileOpts)
   }
 }

@@ -59,14 +59,16 @@ object ClientError {
   case class Unknown(throwable: Throwable) extends ClientError
 }
 
-trait Engine[IO[_], Impl, T] {
-  def read(i: Impl, t: Id[T]): IO[Option[T]]
+// Implementations define how a given Backend can manipulate a given resource type.
+// Not all backends can operate on all resource types.
+trait Engine[IO[_], C, T] {
+  def read(i: C, t: Id[T]): IO[Option[T]]
 
-  def write(i: Impl, t: T): IO[Unit]
-  def writeStatus[St](i: Impl, t: T, st: St)(implicit sub: HasStatus[T, St]): IO[Unit]
+  def write(i: C, t: T): IO[Unit]
+  def writeStatus[St](i: C, t: T, st: St)(implicit sub: HasStatus[T, St]): IO[Unit]
 
   def classifyError(e: Throwable): ClientError
 
-  def delete(i: Impl, id: Id[T]): IO[Unit]
-  def listAndWatch(i: Impl, opts: ListOptions): IO[(List[T], fs2.Stream[IO, Event[T]])]
+  def delete(i: C, id: Id[T]): IO[Unit]
+  def listAndWatch(i: C, opts: ListOptions): IO[(List[T], fs2.Stream[IO, Event[T]])]
 }

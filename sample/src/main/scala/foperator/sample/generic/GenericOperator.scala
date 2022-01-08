@@ -4,7 +4,7 @@ import cats.effect.{Concurrent, ContextShift, Timer}
 import cats.implicits._
 import foperator.sample.Models.{GreetingSpec, GreetingStatus}
 import foperator.types.{Engine, HasSpec, HasStatus, ObjectResource}
-import foperator.{Operations, Reconciler}
+import foperator.{Client, Reconciler}
 
 /**
  Most operators are written for a particular backend, which is recommended (for simplicity).
@@ -20,8 +20,8 @@ import foperator.{Operations, Reconciler}
   - passing around a client is unnecessary, the `Operations.Builder` type is more convenient and
     exposes everything useful you can do with a client.
 */
-class GenericOperator[IO[_], Client, CRD, CR[_, _]](
-  ops: Operations.Builder[IO, Client],
+class GenericOperator[IO[_], C, CRD, CR[_, _]](
+  ops: Client[IO, C],
   greetingCRD: CRD,
 )
   (implicit
@@ -33,8 +33,8 @@ class GenericOperator[IO[_], Client, CRD, CR[_, _]](
     // But when using generic types, you need to list them individually
     sp: HasSpec[CR[GreetingSpec, GreetingStatus], GreetingSpec],
     st: HasStatus[CR[GreetingSpec, GreetingStatus], GreetingStatus],
-    ge: Engine[IO, Client, CR[GreetingSpec, GreetingStatus]],
-    cre: Engine[IO, Client, CRD],
+    ge: Engine[IO, C, CR[GreetingSpec, GreetingStatus]],
+    cre: Engine[IO, C, CRD],
     res: ObjectResource[CR[GreetingSpec,GreetingStatus]],
     crdRes: ObjectResource[CRD],
   )
@@ -44,7 +44,7 @@ class GenericOperator[IO[_], Client, CRD, CR[_, _]](
   private def expectedStatus(greeting: Greeting) =
     GreetingStatus(s"Hello, ${sp.spec(greeting).name.getOrElse("UNKNOWN")}", Nil)
 
-  private val reconciler = Reconciler.builder[IO, Client, Greeting].status { greeting =>
+  private val reconciler = Reconciler.builder[IO, C, Greeting].status { greeting =>
     // Always return the expected status, Reconciler.customResourceUpdater
     // will make this a no-op without any API calls if it is unchanged.
     io.pure(expectedStatus(greeting))

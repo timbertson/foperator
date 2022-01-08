@@ -2,8 +2,8 @@ package foperator.sample
 
 import cats.effect.ExitCode
 import cats.implicits._
-import foperator.backend.skuber_backend.Skuber
-import foperator.backend.skuber_backend.implicits._
+import foperator.backend.Skuber
+import foperator.backend.skuber.implicits._
 import monix.eval.{Task, TaskApp}
 import foperator.sample.Models._
 import foperator.sample.Models.Skuber._
@@ -11,7 +11,9 @@ import skuber.apiextensions.CustomResourceDefinition
 
 object SimpleOperator extends TaskApp {
   override def run(args: List[String]): Task[ExitCode] = {
-    new SimpleOperator(Skuber()).run.as(ExitCode.Success)
+    Skuber().use { skuber =>
+      new SimpleOperator(skuber).run.as(ExitCode.Success)
+    }
   }
 
   // These would commonly be defined on `class SimpleOperator` instead,
@@ -30,10 +32,10 @@ class SimpleOperator[C](client: Skuber) {
   import SimpleOperator._
 
   def install = {
-    client.ops[CustomResourceDefinition].forceWrite(greetingCrd).void
+    client.apply[CustomResourceDefinition].forceWrite(greetingCrd).void
   }
 
   def run: Task[ExitCode] = {
-    install >> client.ops[Greeting].runReconciler(reconciler).as(ExitCode.Success)
+    install >> client.apply[Greeting].runReconciler(reconciler).as(ExitCode.Success)
   }
 }

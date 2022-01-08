@@ -6,7 +6,7 @@ import cats.implicits._
 import foperator.internal.{Dispatcher, Logging}
 import foperator.types.{ObjectResource, _}
 
-class Operations[IO[_], C, T](c: C)
+class Operations[IO[_], C, T](val client: C)
   (implicit io: Concurrent[IO], cs: ContextShift[IO], e: Engine[IO, C, T], res: ObjectResource[T])
   extends Logging
 {
@@ -17,13 +17,13 @@ class Operations[IO[_], C, T](c: C)
       io.pure(original)
     } else {
       logger.debug(s"Updating status of ${res.id(original)}")
-      e.writeStatus(c, original, st)
+      e.writeStatus(client, original, st)
     }
   }
 
   def write(t: T): IO[Unit] = {
     logger.debug(s"Writing ${res.id(t)}")
-    e.write(c, t)
+    e.write(client, t)
   }
 
   def update(t: T)(block: T => T)(implicit eq: Eq[T]): IO[Unit] = {
@@ -32,13 +32,13 @@ class Operations[IO[_], C, T](c: C)
       io.pure(t)
     } else {
       io.delay(logger.debug(s"Writing ${res.id(t)}")) >>
-      e.write(c, t)
+      e.write(client, t)
     }
   }
 
   def delete(id: Id[T]): IO[Unit] = {
     io.delay(logger.debug(s"Deleting $id")) >>
-    e.delete(c, id)
+    e.delete(client, id)
   }
 
   def deleteIfPresent(id: Id[T]): IO[Boolean] = {
@@ -51,12 +51,12 @@ class Operations[IO[_], C, T](c: C)
   }
 
   def get(id: Id[T]): IO[Option[T]] = {
-    e.read(c, id)
+    e.read(client, id)
   }
 
   def forceWrite(t: T): IO[Unit] = {
     val id = res.id(t)
-    e.read(c, id).flatMap {
+    e.read(client, id).flatMap {
       case None => {
         logger.debug("[{}] forceWrite: no current version found", id)
         write(t)
@@ -71,16 +71,16 @@ class Operations[IO[_], C, T](c: C)
     }
   }
 
-  def mirror[R](block: ResourceMirror[IO, T] => IO[R]): IO[R] = ResourceMirror[IO, C, T, R](c, ListOptions.all)(block)
+  def mirror[R](block: ResourceMirror[IO, T] => IO[R]): IO[R] = ResourceMirror[IO, C, T, R](client, ListOptions.all)(block)
 
-  def mirrorFor[R](opts: ListOptions)(block: ResourceMirror[IO, T] => IO[R]): IO[R] = ResourceMirror[IO, C, T, R](c, opts)(block)
+  def mirrorFor[R](opts: ListOptions)(block: ResourceMirror[IO, T] => IO[R]): IO[R] = ResourceMirror[IO, C, T, R](client, opts)(block)
 
   def runReconciler(
     reconciler: Reconciler[IO, C, T],
     opts: ReconcileOptions = ReconcileOptions()
   )(implicit timer: Timer[IO], cs: ContextShift[IO]): IO[Unit] = {
     mirror[Unit] { mirror =>
-      Dispatcher.run[IO, C, T](c, mirror, reconciler.reconcile, opts)
+      Dispatcher.run[IO, C, T](client, mirror, reconciler.reconcile, opts)
     }
   }
 
@@ -89,13 +89,5 @@ class Operations[IO[_], C, T](c: C)
     reconciler: Reconciler[IO, C, T],
     opts: ReconcileOptions = ReconcileOptions()
   )(implicit timer: Timer[IO], cs: ContextShift[IO]): IO[Unit] =
-    Dispatcher.run[IO, C, T](c, input, reconciler.reconcile, opts)
-}
-
-object Operations {
-  def apply[IO[_]: Concurrent: ContextShift, C](client: C) = new Builder[IO, C](client)
-
-  class Builder[IO[_]: Concurrent: ContextShift, C](client: C) {
-    def apply[T](implicit e: Engine[IO, C, T], res: ObjectResource[T]): Operations[IO, C, T] = new Operations[IO, C, T](client)
-  }
+    Dispatcher.run[IO, C, T](client, input, reconciler.reconcile, opts)
 }

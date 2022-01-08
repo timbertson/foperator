@@ -54,7 +54,7 @@ class ResourceMirrorTest extends AnyFunSpec {
   }
 
   it("is populated with the initial resource set") {
-    val ops = TestClient.unsafe().ops[Resource]
+    val ops = TestClient.unsafe().apply[Resource]
     tick(ops.write(Resource.fixture))
 
     val f = tick(ops.mirror { mirror =>
@@ -65,7 +65,7 @@ class ResourceMirrorTest extends AnyFunSpec {
   }
 
   it("emits IDs for updates") {
-    val ops = TestClient.unsafe().ops[Resource]
+    val ops = TestClient.unsafe().apply[Resource]
     tick(ops.write(f1))
 
     val f = tick(ops.mirror { mirror =>
@@ -88,7 +88,7 @@ class ResourceMirrorTest extends AnyFunSpec {
   }
 
   it("updates internal state before emitting an ID") {
-    val ops = TestClient.unsafe().ops[Resource]
+    val ops = TestClient.unsafe().apply[Resource]
     val f = tick(ops.mirror { mirror =>
       mirror.ids.take(1).compile.toList.flatMap {
         case List(id) => mirror.getActive(id).map(res => (id, res.map(_.spec)))
@@ -100,7 +100,7 @@ class ResourceMirrorTest extends AnyFunSpec {
   }
 
   it("supports multiple concurrent ID consumers") {
-    val ops = TestClient.unsafe().ops[Resource]
+    val ops = TestClient.unsafe().apply[Resource]
     val f = tick(ops.mirror { mirror =>
       Task.parZip2(
         mirror.ids.take(2).compile.toList,
@@ -119,7 +119,7 @@ class ResourceMirrorTest extends AnyFunSpec {
     // we observe the creation as part of the initial set, or
     // emitting of the item is delayed until our subscriber is installed,
     // so we see it as an update.
-    val ops = TestClient.unsafe().ops[Resource]
+    val ops = TestClient.unsafe().apply[Resource]
     val subscribe = ops.mirror { mirror =>
       mirror.ids.take(2).compile.toList
     }

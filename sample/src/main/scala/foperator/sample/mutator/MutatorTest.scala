@@ -1,10 +1,11 @@
 package foperator.sample.mutator
 
 import cats.data.Validated
+import cats.effect.ExitCode
 import cats.effect.concurrent.Deferred
 import cats.implicits._
-import foperator.backend.skuber_backend.Skuber
-import foperator.backend.skuber_backend.implicits._
+import foperator.backend.Skuber
+import foperator.backend.skuber.implicits._
 import foperator.internal.Logging
 import foperator.sample.Models.Skuber._
 import foperator.sample.PrettyPrint.Implicits._
@@ -12,7 +13,7 @@ import foperator.sample.mutator.Mutator.Action
 import foperator.sample.{AdvancedOperator, PrettyPrint}
 import foperator.testkit.{TestClient, TestSchedulerUtil}
 import foperator.{ResourceMirror, ResourceState}
-import monix.eval.Task
+import monix.eval.{Task, TaskApp}
 import monix.execution.Scheduler
 import monix.execution.atomic.Atomic
 import monix.execution.schedulers.TestScheduler
@@ -29,27 +30,28 @@ object MutationTestCase {
   def withSeed(seed: Long) = base.withSeed(seed)
 }
 
-object MutatorTestLive extends Logging {
-  def main(args: Array[String]): Unit = {
-    val client = Skuber()
-    MutatorTest.mainFn(args, seed => {
-      MutatorTest.testLive(MutationTestCase.withSeed(seed), client)
-    })
+object MutatorTestLive extends TaskApp {
+  override def run(args: List[String]): Task[ExitCode] = {
+    Skuber().use { client =>
+      MutatorTest.mainFn(args.toArray, seed => {
+        MutatorTest.testLive(MutationTestCase.withSeed(seed), client)
+      })
+    }.as(ExitCode.Success)
   }
 }
 
 object MutatorTest extends Logging {
   def main(args: Array[String]): Unit = {
     mainFn(args, seed => testSynthetic(MutationTestCase.withSeed(seed)))
+      .runSyncUnsafe()(Scheduler.global, implicitly)
   }
 
   // given a runTest function, run whatever tests are implied bu commandline arguments
-  def mainFn(args: Array[String], runTest: Long => Task[Unit]): Unit = {
-    val task: Task[Unit] = args match {
+  def mainFn(args: Array[String], runTest: Long => Task[Unit]): Task[Unit] = {
+    args match {
       case Array() => runTest(System.currentTimeMillis()).restartUntil(_ => false)
       case args => args.toList.map(_.toLong).traverse_(seed => runTest(seed))
     }
-    task.runSyncUnsafe()(Scheduler.global, implicitly)
   }
 
   def assertValid(validator: StateValidator) = {
@@ -126,11 +128,11 @@ object MutatorTest extends Logging {
     // We need all resource-related subscriptions to happen on the test scheduler.
     // So we run the overall block on the test scheduler, but pass state via
     // a deferred so that we can run the test logic outside the scheduler.
-    val main = client.ops[Greeting].mirror { greetings =>
-      client.ops[Person].mirror { people =>
+    val main = client.apply[Greeting].mirror { greetings =>
+      client.apply[Person].mirror { people =>
         for {
           // start the operator first, then complete the `ready` deferred
-          fiber <- new AdvancedOperator(client.ops).runWith(greetings, people).start
+          fiber <- new AdvancedOperator(client).runWith(greetings, people).start
           _ <- ready.complete((greetings, people))
           _ <- fiber.join
         } yield ()
@@ -206,7 +208,7 @@ object MutatorTest extends Logging {
 
     (deleteAll >> Mutator.withResourceMirrors(client) { (greetings, people) =>
       val mutator = new Mutator(client, greetings, people)
-      val main = new AdvancedOperator(client.ops).runWith(greetings, people)
+      val main = new AdvancedOperator(client).runWith(greetings, people)
 
       // In parallel with main, we also trace when we see updates to resources.
       // This lets validate check that _some_ update has been seen since the last action,

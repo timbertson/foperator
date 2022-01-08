@@ -71,7 +71,7 @@ object Models {
     import io.k8s.apiextensionsapiserver.pkg.apis.apiextensions.v1._
     import io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
     import com.goyeau.kubernetes.client.crd.CustomResource
-    import foperator.backend.kubernetesclient_backend.CrdContextFor
+    import foperator.backend.kubernetesclient.CrdContext
 
     val greetingCrd = CustomResourceDefinition(
       metadata = Some(ObjectMeta(name = Some("greeting." + apiGroup))),
@@ -93,7 +93,7 @@ object Models {
       )
     )
 
-    implicit val greetingCrdContext = CrdContextFor[GreetingSpec, GreetingStatus](greetingCrd)
+    implicit val greetingCrdContext = CrdContext[GreetingSpec, GreetingStatus](greetingCrd)
 
     type Greeting = CustomResource[GreetingSpec, GreetingStatus]
   }

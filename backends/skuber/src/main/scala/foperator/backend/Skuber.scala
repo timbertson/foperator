@@ -1,47 +1,55 @@
-package foperator.backend.skuber_backend
+package foperator.backend
 
 import akka.actor.ActorSystem
 import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.Sink
 import cats.data.NonEmptyList
+import cats.effect.Resource
 import com.typesafe.config.{Config, ConfigFactory}
+import foperator._
+import foperator.internal.Logging
+import foperator.types._
 import fs2.interop.reactivestreams._
 import monix.eval.Task
 import monix.eval.instances.CatsConcurrentEffectForTask
 import monix.execution.Scheduler
 import monix.execution.schedulers.TestScheduler
-import foperator.internal.{BackendCompanion, Logging}
-import foperator.types._
-import foperator.{Event, Id, ListOptions, Operations}
 import play.api.libs.json.Format
-import skuber.api.client.{EventType, KubernetesClient, WatchEvent}
-import skuber.json.format.ListResourceFormat
-import skuber.{HasStatusSubresource, LabelSelector, ResourceDefinition}
+import _root_.skuber
+import _root_.skuber.api.client.{EventType, KubernetesClient, WatchEvent}
+import _root_.skuber.json.format.ListResourceFormat
+import _root_.skuber.{HasStatusSubresource, LabelSelector, ResourceDefinition}
 
 import scala.concurrent.ExecutionContext
 
-class Skuber(val underlying: KubernetesClient, val scheduler: Scheduler, val materializer: ActorMaterializer) {
-  val ops = Operations[Task, Skuber](this)
+class Skuber
+  (val underlying: KubernetesClient, val scheduler: Scheduler, val materializer: ActorMaterializer)
+  extends Client[Task, Skuber] {
+  override def apply[T]
+    (implicit e: Engine[Task, Skuber, T], res: ObjectResource[T]): Operations[Task, Skuber, T]
+    = new Operations[Task, Skuber, T](this)
 }
 
-object Skuber extends BackendCompanion[Task, Skuber] {
-  type Ops[T] = Operations[Task, Skuber, T]
+object Skuber extends Client.Companion[Task, Skuber] {
   import scala.jdk.CollectionConverters._
 
   implicit def engine[T<:skuber.ObjectResource]
     (implicit rd: skuber.ResourceDefinition[T], fmt: Format[T])
-    : Engine[Task, Skuber, T]
+    : EngineFor[T]
     = new EngineImpl[T]
 
   def apply(
     scheduler: Scheduler = Scheduler.global,
     config: Config = ConfigFactory.load(),
     clientOverride: Option[KubernetesClient] = None,
-  ): Skuber = {
-    val actorSystem = Skuber.actorSystem(scheduler, config)
-    val materializer: ActorMaterializer = ActorMaterializer()(actorSystem)
-    val client: KubernetesClient = clientOverride.getOrElse(skuber.k8sInit(config)(actorSystem, materializer))
-    new Skuber(client, scheduler, materializer)
+  ): Resource[Task, Skuber] = {
+    Skuber.actorSystem(scheduler, config).flatMap { actorSystem =>
+      Resource.make(Task.delay {
+        val materializer: ActorMaterializer = ActorMaterializer()(actorSystem)
+        val client: KubernetesClient = clientOverride.getOrElse(skuber.k8sInit(config)(actorSystem, materializer))
+        new Skuber(client, scheduler, materializer)
+      })(skuber => Task(skuber.underlying.close))
+    }
   }
 
   def overrideConfig(config: Config) = configOverrides.withFallback(config)
@@ -52,7 +60,7 @@ object Skuber extends BackendCompanion[Task, Skuber] {
     "akka.logging-filter" -> "akka.event.slf4j.Slf4jLoggingFilter",
   ).asJava)
 
-  def actorSystem(scheduler: Scheduler, config: Config): ActorSystem = {
+  def actorSystem(scheduler: Scheduler, config: Config): Resource[Task, ActorSystem] = {
     val schedulerImpl = scheduler match {
       case _: TestScheduler => {
         // Akka is rife with Await.result() calls, which completely breaks any attempt to use a synthetic
@@ -61,18 +69,20 @@ object Skuber extends BackendCompanion[Task, Skuber] {
       }
       case other => other
     }
-    ActorSystem(
-      name = "foperatorActorSystem",
-      config = Some(overrideConfig(config)),
-      classLoader = None,
-      defaultExecutionContext = Some[ExecutionContext](schedulerImpl)
-    )
+    Resource.make(Task.delay {
+      ActorSystem(
+        name = "foperatorActorSystem",
+        config = Some(overrideConfig(config)),
+        classLoader = None,
+        defaultExecutionContext = Some[ExecutionContext](schedulerImpl)
+      )
+    })(sys => Task.deferFuture(sys.terminate()).void)
   }
 
   private class EngineImpl[T<: skuber.ObjectResource](
     implicit rd: ResourceDefinition[T],
     fmt: Format[T],
-  ) extends Engine[Task, Skuber, T] with Logging {
+  ) extends EngineFor[T] with Logging {
     override def classifyError(e: Throwable): ClientError = e match {
       case err: skuber.K8SException if err.status.code.contains(409) => ClientError.VersionConflict(e)
       case err: skuber.K8SException if err.status.code.contains(404) => ClientError.NotFound(e)

@@ -4,9 +4,9 @@ import cats.Eq
 import cats.effect.concurrent.{MVar, MVar2}
 import cats.effect.{Clock, Concurrent, ContextShift}
 import cats.implicits._
-import foperator.internal.{BackendCompanion, Broadcast, Logging}
+import foperator.internal.{Broadcast, Logging}
 import foperator.types._
-import foperator.{Event, Id, ListOptions, Operations}
+import foperator.{Client, Event, Id, ListOptions, Operations}
 import monix.eval.Task
 import monix.execution.Scheduler
 import monix.execution.schedulers.CanBlock
@@ -18,8 +18,12 @@ class TestClient[IO[_]: ContextShift](
   state: MVar2[IO, TestClient.State],
   val topic: Broadcast[IO, Event[TestClient.Entry]],
   val auditors: List[Event[TestClient.Entry] => IO[Unit]],
-)(implicit io: Concurrent[IO]) extends Logging {
-  val ops = Operations[IO, TestClient[IO]](this)
+)(implicit io: Concurrent[IO]) extends Client[IO, TestClient[IO]] with Logging {
+
+  override def apply[T]
+    (implicit e: Engine[IO, TestClient[IO], T], res: ObjectResource[T])
+    : Operations[IO, TestClient[IO], T]
+    = new Operations[IO, TestClient[IO], T](this)
 
   def readState = state.read
 
@@ -47,11 +51,11 @@ class TestClient[IO[_]: ContextShift](
   }
 }
 
-object TestClient extends BackendCompanion[Task, TestClient[Task]] {
+object TestClient extends Client.Companion[Task, TestClient[Task]] {
   // Internal state is untyped for simplicity.
   // Correct usage requires that no two types have the same `kind` + `apiVersion`
-  type State = Map[ResourceKey, Any]
-  type Entry = (ResourceKey, Any)
+  private [testkit] type State = Map[ResourceKey, Any]
+  private [testkit] type Entry = (ResourceKey, Any)
 
   def apply[IO[_]](implicit io: Concurrent[IO], cs: ContextShift[IO]): IO[TestClient[IO]] = {
     for {
@@ -64,14 +68,13 @@ object TestClient extends BackendCompanion[Task, TestClient[Task]] {
 
   implicit def implicitEngine[IO[_], T]
     (implicit io: Concurrent[IO], clock: Clock[IO], res: ObjectResource[T], eq: Eq[T])
-  : Engine[IO, TestClient[IO], T]
+  : foperator.types.Engine[IO, TestClient[IO], T]
   = new TestClientEngineImpl[IO, T]
 
   implicit def implicitOps[IO[_], T](c: TestClient[IO])
     (implicit io: Concurrent[IO], cs: ContextShift[IO], engine: Engine[IO, TestClient[IO], T], res: ObjectResource[T])
   : Operations[IO, TestClient[IO], T]
   = new Operations(c)
-
 }
 
 class TestClientError(val e: ClientError) extends RuntimeException(e.throwable)

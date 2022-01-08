@@ -4,8 +4,8 @@ import cats.Eq
 import cats.effect.ExitCode
 import cats.implicits._
 import foperator._
-import foperator.backend.skuber_backend.Skuber
-import foperator.backend.skuber_backend.implicits._
+import foperator.backend.Skuber
+import foperator.backend.skuber.implicits._
 import foperator.internal.Logging
 import foperator.sample.Models.{GreetingSpec, PersonSpec}
 import foperator.sample.Models.Skuber._
@@ -24,35 +24,38 @@ import scala.util.{Failure, Random, Success}
 
 object Simple extends TaskApp with Logging {
   override def run(args: List[String]): Task[ExitCode] = {
-    val client = Skuber()
-    val simple = new SimpleOperator(client)
-    simple.install >> Mutator.withResourceMirrors(client) { (greetings, people) =>
-      Task.parZip2(
-        client.ops[Greeting].runReconcilerWithInput(greetings, SimpleOperator.reconciler),
-        new Mutator(client, greetings, people).run
-      ).void
-    }
-  }.map(_ => ExitCode.Success)
+    Skuber().use { client =>
+      val simple = new SimpleOperator(client)
+      simple.install >> Mutator.withResourceMirrors(client) { (greetings, people) =>
+        Task.parZip2(
+          client[Greeting].runReconcilerWithInput(greetings, SimpleOperator.reconciler),
+          new Mutator(client, greetings, people).run
+        ).void
+      }
+    }.as(ExitCode.Success)
+  }
 }
 
 object Advanced extends TaskApp {
   override def run(args: List[String]): Task[ExitCode] = {
-    val client = Skuber()
-    val advanced = new AdvancedOperator(client.ops)
-    advanced.install >> Mutator.withResourceMirrors(client) { (greetings, people) =>
-      Task.parZip2(
-        advanced.runWith(greetings, people),
-        new Mutator(client, greetings, people).run
-      ).void
-    }
-  }.map(_ => ExitCode.Success)
+    Skuber().use { client =>
+      val advanced = new AdvancedOperator(client)
+      advanced.install >> Mutator.withResourceMirrors(client) { (greetings, people) =>
+        Task.parZip2(
+          advanced.runWith(greetings, people),
+          new Mutator(client, greetings, people).run
+        ).void
+      }
+    }.as(ExitCode.Success)
+  }
 }
 
 object Standalone extends TaskApp {
   override def run(args: List[String]): Task[ExitCode] = {
-    val client = Skuber()
-    Mutator.withResourceMirrors(client) { (greetings, people) =>
-      new Mutator(client, greetings, people).run
+    Skuber().use { client =>
+      Mutator.withResourceMirrors(client) { (greetings, people) =>
+        new Mutator(client, greetings, people).run
+      }
     }
   }
 }
@@ -175,8 +178,8 @@ object Mutator extends Logging {
   // all mutators / operators within the `op`
   def withResourceMirrors[T](client: Skuber)(op: (ResourceMirror[Task, Greeting], ResourceMirror[Task, Person]) => Task[T]): Task[T] = {
     Task(logger.info("Loading ... ")) >>
-      client.ops[Greeting].mirror { greetings =>
-        client.ops[Person].mirror { people =>
+      client.apply[Greeting].mirror { greetings =>
+        client.apply[Person].mirror { people =>
           Task(logger.info("Running ... ")) >>
             op(greetings, people)
         }

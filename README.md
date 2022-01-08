@@ -9,7 +9,7 @@ Current status: everything works, but it's early days and it might change substa
  - Write your operator in `scala`, not `golang`
    - type safe, `null`-safe, generics, composable
  - Small: <1k LOC, only a dozen classes
- - Client-agnostic (`foperator-skuber` is provided but you can BYO)
+ - Client-agnostic (`foperator-skuber` and `foperator-kubernetes-client` backends are available)
  - Functional, pure API using [cats-effect](https://typelevel.org/cats-effect/) (v2 only for now)
  - First-class object deletion (`ResourceState` encapsulates `Active` | `SoftDeleted` so the types ensure correct handling of deleted resources)
  - Best practices baked in (e.g. `ResourceMirror` is the equivalent of go's `SharedInformer`, except that a `SharedInformer` isn't supported by `controller-runtime`, you have to write a custom `Controller`)
@@ -34,11 +34,11 @@ The Dispatcher (an internal component) uses the stream of updated IDs to schedul
 
 The reconciler is your job: given the current state of an object, it does whatever it is you want to do, and (typically) updates the status of the reconciled object.
 
-# Types for writing operators
+# Important types
 
 To get a better understanding of how to write foperator code, let's take a tour of the core types you'll encounter:
 
-## Reconciler[IO, Client, T]:
+## `Reconciler[IO, Client, T]`
 
 `T` is the type of the resource being reconciled, like `Pod`, `Job` or `MyCustomThing`.
 
@@ -46,17 +46,30 @@ To get a better understanding of how to write foperator code, let's take a tour 
 
 And `Client` is the type of the client - `Skuber` if you're using `foperator-skuber`.
 
-A reconciler is essentially a function of the type `(Client, T) => IO[ReconcileResult]`.
+A reconciler is essentially a function of the type `(Client, T) => IO[ReconcileResult]`. Like a function it's inert, you need to provide a client in order to run it.
 
 The reconciler is given the current state of the object it's reconciling, and is responsible for making the world right (which is up to you).
 
 However there are some convenience builders to make this even simpler, e.g. if you don't need to return a custom result or interact with the client, you can just supply a function `T => IO[Unit]`.
 
-## Operations[IO, Cclient, T]
+## `Client[IO, Client]`
 
-The Operations type simply ties together a backend client engine with a compatible resource type. Given these, it provides convenience functions for anything that needs a client - reading, writing, creating a mirror and running a reconciler.
+The Client trait is a foperator wrapper around an underlying client (e.g. skuber or kubernetes-client). This is the dependency you'll need in order to actually run anything. Individual backends inherit from this type.
 
-## ResourceMirror[IO, T]
+(The `Client` paramater is essentially "Self", i.e. the Skuber client implements Client[Task, Skuber]). This is a little ugly and I'd get rid of it if I knew how ;)
+
+## `Client.Companion[IO]`
+
+Each backend's companion object (e.g. Skuber, KubernetesClient, TestClient) inherits some common companion functionality. Most useful is the `Reconcile` builder object, which saves you from having to specify the IO and Client types explicitly.
+
+## `Operations[IO, Client, T]`
+
+The Operations type is the convenient interface tying together a Client and a specific resource type.
+It provides convenience functions for anything you want to do with a client - reading, writing, creating a mirror and running a reconciler.
+
+Operations can only be constructed for a combination of `IO`, `Client` and `T` where there is an implicit `Engine` available, which essentially controls what resources a given backend is capable of operating on (see below).
+
+## `ResourceMirror[IO, T]`
 
 A ResourceMirror is effectively a local cache of the Kubernetes state that we're interested in. You can set up a ResourceMirror for all objects of a given type, or just for a subset (based on labels). It will initially get a list of all such resources, as well as setting up a watch for any future changes. Using this, it maintains an internal state of every watched object, _plus_ a stream of IDs of updated resources.
 
@@ -66,17 +79,21 @@ Because a ResourceMirror instance corresponds to an ongoing `watch` API query as
 
 # Types for implementing new backends
 
-A backend is made up of two main parts - the client type, and the resource type(s).
-
-## ObjectResource[T]
+## `ObjectResource[T]` (typeclass)
 
 This is a simple typeclass to provide resource functionality for a given type. Mostly it relates to getting / setting various kubernetes metadata (version, finalizers, API path, etc).
 
-## Engine[IO, Client, T]
+## `Engine[IO, Client, T]` (typeclass)
 
-This is the interface required for foperator to use an underlying client type. The required methods are a small subset of what most kubernetes clients will expose.
+To build an `Operations`, you'll need an implicit Engine[IO, Client, T] available. This is the low-level definition of how a given Client can operate on a given resource type (T).
 
-Some backends will place a type constraint on `T`, e.g for skuber the Engine implementation requires `T <: skuber.ObjectResource`
+#### Available engines:
+
+Various implicit engine definitions are available, with certain constraints on the resource type:
+
+ - `Engine[Task, Skuber, T<:skuber.ObjectResource]`, which means "a Skuber client can act on any subclass of skuber.ObjectResource".
+ - `Engine[IO[_], KubernetesClient, T]` for individual T types from the `kubernetes-client` package.
+ - `Engine[IO[_], TestClient, T]` for any T which has an ObjectResource instance defined.
 
 # Troubleshooting implicits / typeclasses
 

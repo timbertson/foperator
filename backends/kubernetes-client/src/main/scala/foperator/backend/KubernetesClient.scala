@@ -1,19 +1,20 @@
-package foperator.backend.kubernetesclient_backend
+package foperator.backend
 
 import cats.Eq
 import cats.effect.concurrent.Deferred
 import cats.effect.{Concurrent, ConcurrentEffect, ContextShift, Resource, Sync, Timer}
 import cats.implicits._
+import com.goyeau.kubernetes.client
 import com.goyeau.kubernetes.client.foperatorext.Types.{HasMetadata, ListOf, ResourceAPI, ResourceGetters}
-import com.goyeau.kubernetes.client.{EventType, KubeConfig, KubernetesClient}
+import com.goyeau.kubernetes.client.{EventType, KubeConfig}
+import foperator._
+import foperator.internal.Logging
+import foperator.types._
 import fs2.{Chunk, Stream}
 import io.k8s.apimachinery.pkg.apis.meta.v1.{ObjectMeta, Time}
 import monix.eval.Task
 import monix.eval.instances.CatsConcurrentEffectForTask
 import monix.execution.Scheduler
-import foperator.internal.{BackendCompanion, Logging}
-import foperator.types._
-import foperator.{Event, Id, ListOptions, Operations}
 import org.http4s.{Status, Uri}
 
 import java.time.format.DateTimeFormatter
@@ -21,28 +22,39 @@ import java.time.{Instant, ZoneOffset}
 import scala.concurrent.duration._
 import scala.language.reflectiveCalls
 
-class KClient[IO[_] : Concurrent : ContextShift](val underlying: KubernetesClient[IO]) {
-  val ops = Operations[IO, KClient[IO]](this)
+class KubernetesClient[IO[_] : Concurrent : ContextShift](val underlying: client.KubernetesClient[IO])
+extends Client[IO, KubernetesClient[IO]] {
+  override def apply[T]
+    (implicit e: Engine[IO, KubernetesClient[IO], T], res: ObjectResource[T]): Operations[IO, KubernetesClient[IO], T]
+    = new Operations[IO, KubernetesClient[IO], T](this)
 }
 
-object KClient {
-  def apply[IO[_]](implicit cs: ContextShift[IO], ce: ConcurrentEffect[IO]) = new KClientCompanion[IO]
+object KubernetesClient {
+  def apply[IO[_]](implicit cs: ContextShift[IO], ce: ConcurrentEffect[IO]) = new Companion[IO]
+
+  class Companion[IO[_]](implicit cs: ContextShift[IO], ce: ConcurrentEffect[IO]) extends Client.Companion[IO, KubernetesClient[IO]] {
+    def wrap(underlying: client.KubernetesClient[IO]): KubernetesClient[IO] = new KubernetesClient(underlying)
+
+    def apply(config: KubeConfig): Resource[IO, KubernetesClient[IO]] = client.KubernetesClient[IO](config).map(wrap)
+
+    def apply(config: IO[KubeConfig]): Resource[IO, KubernetesClient[IO]] = client.KubernetesClient(config).map(wrap)
+  }
 
   implicit def engine[IO[_] : Concurrent : ContextShift : Timer, T<:HasMetadata, TList<:ListOf[T]]
     (implicit api: HasResourceApi[IO, T, TList], res: ObjectResource[T], io: Sync[IO])
-  : Engine[IO, KClient[IO], T]
+  : Engine[IO, KubernetesClient[IO], T]
   = new EngineImpl[IO, T, TList]
 
   // Internal traits used to tie resources to clients
-  // (i.e you can only build a KClient engine for types which have
+  // (i.e you can only build a KubernetesClient engine for types which have
   // an instance of HasResourceApi
-  private [kubernetesclient_backend] trait HasResourceApi[IO[_], T<:HasMetadata, TList<:ListOf[T]] {
-    def resourceAPI(client: KubernetesClient[IO]): ResourceAPI[IO, T, TList]
+  private [backend] trait HasResourceApi[IO[_], T<:HasMetadata, TList<:ListOf[T]] {
+    def resourceAPI(c: client.KubernetesClient[IO]): ResourceAPI[IO, T, TList]
 
     // NOTE: not all resources can have their status updated. This will fail
     // at runtime if you try to use it on the wrong type, because
     // encoding this in the type system sounds like too much hard work ;)
-    def updateStatus(client: KubernetesClient[IO], t: T): IO[Status]
+    def updateStatus(c: client.KubernetesClient[IO], t: T): IO[Status]
   }
 
   // we need a fake client instance just to get api endpoint strings.
@@ -51,16 +63,16 @@ object KClient {
   // TODO feature request: expose kind somewhere more accessible
   private val dummyClient = {
     implicit val io: CatsConcurrentEffectForTask = Task.catsEffect(Scheduler.global)
-    KubernetesClient(KubeConfig.of[Task](
+    client.KubernetesClient(KubeConfig.of[Task](
       Uri.fromString("https://127.0.0.1/fake-kubernetes").toOption.get
     )).use(Task.pure).runSyncUnsafe(10.seconds)(Scheduler.global, implicitly)
   }
 
-  class ResourceImpl[IO[_], St, T<:ResourceGetters[St], TList<:ListOf[T]](
-    getApi: KubernetesClient[IO] => ResourceAPI[IO, T, TList],
+  private [backend] class ResourceImpl[IO[_], St, T<:ResourceGetters[St], TList<:ListOf[T]](
+    getApi: client.KubernetesClient[IO] => ResourceAPI[IO, T, TList],
     withMeta: (T, ObjectMeta) => T,
     withStatusFn: (T, St) => T,
-    updateStatusFn: (KubernetesClient[IO], Id[T], T) => IO[Status],
+    updateStatusFn: (client.KubernetesClient[IO], Id[T], T) => IO[Status],
     eq: Eq[T] = Eq.fromUniversalEquals[T],
     eqSt: Eq[St] = Eq.fromUniversalEquals[St],
   ) extends ObjectResource[T] with HasStatus[T, St] with HasResourceApi[IO, T, TList] with Eq[T] {
@@ -73,7 +85,7 @@ object KClient {
 
     override def withStatus(obj: T, status: St): T = withStatusFn(obj, status)
 
-    override def kind: String = getApi(dummyClient.asInstanceOf[KubernetesClient[IO]]).resourceUri.path.segments.lastOption.map(_.toString).getOrElse("UNKNOWN")
+    override def kind: String = getApi(dummyClient.asInstanceOf[client.KubernetesClient[IO]]).resourceUri.path.segments.lastOption.map(_.toString).getOrElse("UNKNOWN")
 
     override def finalizers(t: T): List[String] = t.metadata.flatMap(_.finalizers).map(_.toList).getOrElse(Nil)
 
@@ -95,18 +107,18 @@ object KClient {
     override def softDeletedAt(t: T, time: Instant): T =
       withMeta(t, meta(t).copy(deletionTimestamp = Some(Time(time.atZone(ZoneOffset.UTC).format(DateTimeFormatter.ISO_DATE_TIME)))))
 
-    override def resourceAPI(client: KubernetesClient[IO]): ResourceAPI[IO, T, TList] = getApi(client)
+    override def resourceAPI(c: client.KubernetesClient[IO]): ResourceAPI[IO, T, TList] = getApi(c)
 
-    override def updateStatus(client: KubernetesClient[IO], t: T): IO[Status] = updateStatusFn(client, id(t), t)
+    override def updateStatus(c: client.KubernetesClient[IO], t: T): IO[Status] = updateStatusFn(c, id(t), t)
   }
 
   class StatusError(val status: Status) extends RuntimeException(status.toString)
 
   private class EngineImpl[IO[_], T<:HasMetadata, TList<:ListOf[T]]
     (implicit api: HasResourceApi[IO, T, TList], res: ObjectResource[T], io: Concurrent[IO], timer: Timer[IO])
-    extends Engine[IO, KClient[IO], T] with Logging
+    extends Engine[IO, KubernetesClient[IO], T] with Logging
   {
-    private def ns(c: KClient[IO], id: Id[T]) =
+    private def ns(c: KubernetesClient[IO], id: Id[T]) =
       api.resourceAPI(c.underlying).namespace(id.namespace)
 
     // TODO does this happen by default? feels liks it should, and if not the kclient readme is missing error handling
@@ -125,20 +137,20 @@ object KClient {
         case _ => ClientError.Unknown(e)
       }
       // TODO does kclient throw its own errors?
-      case other => ClientError.Unknown(e)
+      case _ => ClientError.Unknown(e)
     }
 
     // TODO this doesn't report 404 correctly
-    override def read(c: KClient[IO], t: Id[T]): IO[Option[T]] = ns(c, t).get(t.name).map(Some.apply)
+    override def read(c: KubernetesClient[IO], t: Id[T]): IO[Option[T]] = ns(c, t).get(t.name).map(Some.apply)
 
-    override def write(c: KClient[IO], t: T): IO[Unit] = handleResponse(ns(c, res.id(t)).replace(t))
+    override def write(c: KubernetesClient[IO], t: T): IO[Unit] = handleResponse(ns(c, res.id(t)).replace(t))
 
-    override def writeStatus[St](c: KClient[IO], t: T, st: St)(implicit sub: HasStatus[T, St]): IO[Unit] =
+    override def writeStatus[St](c: KubernetesClient[IO], t: T, st: St)(implicit sub: HasStatus[T, St]): IO[Unit] =
       handleResponse(api.updateStatus(c.underlying, sub.withStatus(t, st)))
 
-    override def delete(c: KClient[IO], id: Id[T]): IO[Unit] = handleResponse(ns(c, id).delete(id.name))
+    override def delete(c: KubernetesClient[IO], id: Id[T]): IO[Unit] = handleResponse(ns(c, id).delete(id.name))
 
-    override def listAndWatch(c: KClient[IO], opts: ListOptions): IO[(List[T], fs2.Stream[IO, Event[T]])] = {
+    override def listAndWatch(c: KubernetesClient[IO], opts: ListOptions): IO[(List[T], fs2.Stream[IO, Event[T]])] = {
       val ns = api.resourceAPI(c.underlying).namespace(opts.namespace)
       if (opts.fieldSelector.nonEmpty) {
         // TODO: feature request
@@ -199,17 +211,6 @@ object KClient {
       }
     }
   }
-}
-
-class KClientCompanion[IO[_]](implicit cs: ContextShift[IO], ce: ConcurrentEffect[IO]) extends BackendCompanion[IO, KClient[IO]] {
-
-  def wrap(underlying: KubernetesClient[IO]): KClient[IO] = new KClient(underlying)
-
-  def apply(config: KubeConfig): Resource[IO, KClient[IO]] = KubernetesClient[IO](config).map(wrap)
-
-  def apply(config: IO[KubeConfig]): Resource[IO, KClient[IO]] = KubernetesClient(config).map(wrap)
-
-  type Ops[T] = Operations[IO, KClient[IO], T]
 }
 
 

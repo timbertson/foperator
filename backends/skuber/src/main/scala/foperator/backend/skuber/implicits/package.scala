@@ -1,4 +1,4 @@
-package foperator.backend.skuber_backend
+package foperator.backend.skuber
 
 import cats.Eq
 import cats.implicits._
