@@ -49,7 +49,7 @@ object KubernetesClient {
   // (i.e you can only build a KubernetesClient engine for types which have
   // an instance of HasResourceApi
   private [backend] trait HasResourceApi[IO[_], T<:HasMetadata, TList<:ListOf[T]] {
-    def resourceAPI(c: client.KubernetesClient[IO]): ResourceAPI[IO, T, TList]
+    def namespaceApi(c: client.KubernetesClient[IO], ns: String): NamespacedResourceAPI[IO, T, TList] with HasResourceURI
 
     // NOTE: not all resources can have their status updated. This will fail
     // at runtime if you try to use it on the wrong type, because
@@ -69,7 +69,7 @@ object KubernetesClient {
   }
 
   private [backend] class ResourceImpl[IO[_], St, T<:ResourceGetters[St], TList<:ListOf[T]](
-    getApi: client.KubernetesClient[IO] => ResourceAPI[IO, T, TList],
+    getApi: (client.KubernetesClient[IO], String) => NamespacedResourceAPI[IO, T, TList] with HasResourceURI,
     withMeta: (T, ObjectMeta) => T,
     withStatusFn: (T, St) => T,
     updateStatusFn: (client.KubernetesClient[IO], Id[T], T) => IO[Status],
@@ -85,7 +85,7 @@ object KubernetesClient {
 
     override def withStatus(obj: T, status: St): T = withStatusFn(obj, status)
 
-    override def kind: String = getApi(dummyClient.asInstanceOf[client.KubernetesClient[IO]]).resourceUri.path.segments.lastOption.map(_.toString).getOrElse("UNKNOWN")
+    override def kind: String = getApi(dummyClient.asInstanceOf[client.KubernetesClient[IO]], "ns").resourceUri.path.segments.lastOption.map(_.toString).getOrElse("UNKNOWN")
 
     override def finalizers(t: T): List[String] = t.metadata.flatMap(_.finalizers).map(_.toList).getOrElse(Nil)
 
@@ -107,7 +107,7 @@ object KubernetesClient {
     override def softDeletedAt(t: T, time: Instant): T =
       withMeta(t, meta(t).copy(deletionTimestamp = Some(Time(time.atZone(ZoneOffset.UTC).format(DateTimeFormatter.ISO_DATE_TIME)))))
 
-    override def resourceAPI(c: client.KubernetesClient[IO]): ResourceAPI[IO, T, TList] = getApi(c)
+    override def namespaceApi(c: client.KubernetesClient[IO], ns: String): NamespacedResourceAPI[IO, T, TList] = getApi(c, ns)
 
     override def updateStatus(c: client.KubernetesClient[IO], t: T): IO[Status] = updateStatusFn(c, id(t), t)
   }
@@ -119,7 +119,7 @@ object KubernetesClient {
     extends Engine[IO, KubernetesClient[IO], T] with Logging
   {
     private def ns(c: KubernetesClient[IO], id: Id[T]) =
-      api.resourceAPI(c.underlying).namespace(id.namespace)
+      api.namespaceApi(c.underlying, id.namespace)
 
     // TODO does this happen by default? feels liks it should, and if not the kclient readme is missing error handling
     private def handleResponse(status: IO[Status]): IO[Unit] = status.flatMap { st =>
@@ -151,7 +151,7 @@ object KubernetesClient {
     override def delete(c: KubernetesClient[IO], id: Id[T]): IO[Unit] = handleResponse(ns(c, id).delete(id.name))
 
     override def listAndWatch(c: KubernetesClient[IO], opts: ListOptions): IO[(List[T], fs2.Stream[IO, Event[T]])] = {
-      val ns = api.resourceAPI(c.underlying).namespace(opts.namespace)
+      val ns = api.namespaceApi(c.underlying, opts.namespace)
       if (opts.fieldSelector.nonEmpty) {
         // TODO: feature request
         io.raiseError(new RuntimeException(s"kubernetes-client backend does not support fieldSelector in opts: ${opts}"))

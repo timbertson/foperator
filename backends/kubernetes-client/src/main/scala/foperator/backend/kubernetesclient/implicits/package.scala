@@ -30,7 +30,7 @@ package object implicits extends foperator.CommonImplicits {
 
   implicit def implicitPodResource[IO[_]: Async]: ResourceImpl[IO, PodStatus, Pod, PodList] =
     new ResourceImpl[IO, PodStatus, Pod, PodList](
-      _.pods,
+      (c, ns) => c.pods.namespace(ns),
       (o, m) => o.copy(metadata=Some(m)),
       (o, s) => o.copy(status=Some(s)),
       cantUpdateStatus[IO, Pod]
@@ -40,7 +40,7 @@ package object implicits extends foperator.CommonImplicits {
     (implicit crd: CrdContext[CustomResource[Sp, St]])
     : ResourceImpl[IO, St, CustomResource[Sp,St], CustomResourceList[Sp, St]]
     = new ResourceImpl[IO, St, CustomResource[Sp, St], CustomResourceList[Sp, St]](
-      _.customResources[Sp, St](crd.ctx),
+      (c, ns) => c.customResources[Sp, St](crd.ctx).namespace(ns),
       (o, m) => o.copy(metadata=Some(m)),
       (o, s) => o.copy(status=Some(s)),
       (c: client.KubernetesClient[IO], id: Id[CustomResource[Sp, St]], t: CustomResource[Sp, St]) => {
@@ -56,11 +56,10 @@ package object implicits extends foperator.CommonImplicits {
     override def withSpec(obj: CustomResource[Sp, St], spec: Sp): CustomResource[Sp, St] = obj.copy(spec = spec)
   }
 
-  // CRDs aren't namespaced, so some of this is nonsensical...
   implicit def implicitCrdResource[IO[_]: Async]: ResourceImpl[IO, CustomResourceDefinitionStatus, CustomResourceDefinition, CustomResourceDefinitionList]
   = new ResourceImpl[IO, CustomResourceDefinitionStatus, CustomResourceDefinition, CustomResourceDefinitionList](
-    ???,
-//    _.customResourceDefinitions,
+    // CRDs aren't namespaced, so we just ignore the namespace
+    (c, _) => c.customResourceDefinitions,
     (o, m) => o.copy(metadata=Some(m)),
     (o, s) => o.copy(status=Some(s)),
     cantUpdateStatus[IO, CustomResourceDefinition]

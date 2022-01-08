@@ -22,10 +22,8 @@ object Types {
     def items: Seq[T]
   }
 
-  // toplevel API, e.g. PodsApi
-  type ResourceAPI[IO[_], T<:HasMetadata, TList<:ListOf[T]] = {
+  type HasResourceURI = {
     def resourceUri: Uri
-    def namespace(namespace: String): NamespacedResourceAPI[IO, T, TList]
   }
 
   // nested API, e.g. NamespacedPodsApi
