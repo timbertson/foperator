@@ -1,10 +1,10 @@
 package foperator.internal
 
-import cats.effect.{Concurrent, ContextShift, Resource}
+import cats.effect.concurrent.Semaphore
+import cats.effect.{Concurrent, Resource}
 import cats.implicits._
 import fs2.concurrent.Topic
 import fs2.{Pipe, Stream}
-import monix.catnap.Semaphore
 
 // based on Topic, but with additional sequencing to ensure subscription doesn't
 // miss concurrent events, and not requiring an initial value
@@ -49,7 +49,7 @@ class Broadcast[IO[_], T]
 }
 
 object Broadcast {
-  def apply[IO[_]: Concurrent: ContextShift, T]: IO[Broadcast[IO, T]] = for {
+  def apply[IO[_]: Concurrent, T]: IO[Broadcast[IO, T]] = for {
     topic <- Topic[IO, Option[T]](None)
     lock <- Semaphore[IO](1)
   } yield new Broadcast[IO, T](topic, lock)

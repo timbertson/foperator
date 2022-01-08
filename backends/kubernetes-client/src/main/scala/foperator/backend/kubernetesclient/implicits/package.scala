@@ -2,15 +2,15 @@ package foperator.backend.kubernetesclient
 
 import cats.Eq
 import cats.effect.Async
+import com.goyeau.kubernetes.client
 import com.goyeau.kubernetes.client.KubernetesClient
 import com.goyeau.kubernetes.client.crd.{CustomResource, CustomResourceList}
-import com.goyeau.kubernetes.client
+import foperator.Id
+import foperator.types.HasSpec
 import io.circe.{Decoder, Encoder}
 import io.k8s.api.core.v1.{Pod, PodList, PodStatus}
-import io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
-import foperator.Id
-import foperator.types.{HasCustomResourceDefinition, HasSpec}
 import io.k8s.apiextensionsapiserver.pkg.apis.apiextensions.v1.{CustomResourceDefinition, CustomResourceDefinitionList, CustomResourceDefinitionStatus}
+import io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
 import org.http4s.Status
 
 import scala.reflect.ClassTag
@@ -49,9 +49,7 @@ package object implicits extends foperator.CommonImplicits {
     )
 
   // TODO implement in ResourceImpl
-  implicit def implicitCustomResourceSpec[Sp,St]
-    (implicit crd: CrdContext[CustomResource[Sp, St]])
-    : HasSpec[CustomResource[Sp, St], Sp]
+  implicit def implicitCustomResourceSpec[Sp,St]: HasSpec[CustomResource[Sp, St], Sp]
   = new HasSpec[CustomResource[Sp, St], Sp] {
     override def spec(obj: CustomResource[Sp, St]): Sp = obj.spec
 

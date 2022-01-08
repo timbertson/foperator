@@ -1,6 +1,6 @@
 package foperator.sample.generic
 
-import cats.effect.{Concurrent, ContextShift, Timer}
+import cats.effect.{Concurrent, Timer}
 import cats.implicits._
 import foperator.sample.Models.{GreetingSpec, GreetingStatus}
 import foperator.types.{Engine, HasSpec, HasStatus, ObjectResource}
@@ -26,7 +26,6 @@ class GenericOperator[IO[_], C, CRD, CR[_, _]](
 )
   (implicit
     io: Concurrent[IO],
-    cs: ContextShift[IO],
     t: Timer[IO],
 
     // For concrete types, all of these are implicitly available.

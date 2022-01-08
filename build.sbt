@@ -1,7 +1,9 @@
 import ScalaProject._
 
 val fs2Version = "2.5.10"
-val monix = "io.monix" %% "monix" % "3.2.2"
+val monixVersion = "3.2.2"
+val monixEval = "io.monix" %% "monix-eval" % monixVersion
+val monixReactive = "io.monix" %% "monix-reactive" % monixVersion
 val logback = "ch.qos.logback" % "logback-classic" % "1.2.3"
 val scalatest = "org.scalatest" %% "scalatest" % "3.1.0" % "test"
 
@@ -24,7 +26,6 @@ lazy val core = (project in file("core"))
   .settings(
     name := "foperator-core",
     libraryDependencies ++= Seq(
-      "net.gfxmonk" %% "auditspec" % "0.1.0" % "test",
     )
   )
 
@@ -34,7 +35,7 @@ lazy val testkit = (project in file("testkit"))
   .settings(
     name := "foperator-testkit",
     libraryDependencies ++= Seq(
-      monix,
+      monixEval,
     )
   ).dependsOn(core)
 
@@ -45,9 +46,10 @@ lazy val tests = (project in file("tests"))
   .settings(
     name := "foperator-tests",
     libraryDependencies ++= Seq(
-      monix,
+      monixEval,
       logback,
       scalatest,
+      "net.gfxmonk" %% "auditspec" % "0.1.0" % "test",
     )
   ).dependsOn(core, testkit)
 
@@ -59,6 +61,7 @@ lazy val skuber = (project in file("backends/skuber"))
     libraryDependencies ++= Seq(
       "io.skuber" %% "skuber" % "2.4.0",
       "co.fs2" %% "fs2-reactive-streams" % fs2Version,
+      monixReactive,
       "com.typesafe.akka" %% "akka-slf4j" % "2.5.29",
     )
   ).dependsOn(core)
@@ -70,7 +73,8 @@ lazy val kclient = (project in file("backends/kubernetes-client"))
     name := "foperator-backend-kubernetes-client",
     libraryDependencies ++= Seq(
       // v0.7.0 requires cats 3.x
-      "com.goyeau" %% "kubernetes-client" % "0.6.0"
+      "com.goyeau" %% "kubernetes-client" % "0.6.0",
+      monixEval
     )
   ).dependsOn(core)
 

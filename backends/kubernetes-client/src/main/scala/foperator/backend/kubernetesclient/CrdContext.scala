@@ -1,7 +1,7 @@
 package foperator.backend.kubernetesclient
 
-import com.goyeau.kubernetes.client.crd.{CrdContext, CustomResource}
 import com.goyeau.kubernetes.client.crd
+import com.goyeau.kubernetes.client.crd.CustomResource
 import io.k8s.apiextensionsapiserver.pkg.apis.apiextensions.v1.CustomResourceDefinition
 
 // a typeclass for CrdContext so we don't have to pass them around manually

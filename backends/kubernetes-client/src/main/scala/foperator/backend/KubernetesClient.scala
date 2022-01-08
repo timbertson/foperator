@@ -5,7 +5,7 @@ import cats.effect.concurrent.Deferred
 import cats.effect.{Concurrent, ConcurrentEffect, ContextShift, Resource, Timer}
 import cats.implicits._
 import com.goyeau.kubernetes.client
-import com.goyeau.kubernetes.client.foperatorext.Types.{HasMetadata, ListOf, ResourceAPI, ResourceGetters}
+import com.goyeau.kubernetes.client.foperatorext.Types._
 import com.goyeau.kubernetes.client.{EventType, KubeConfig}
 import foperator._
 import foperator.internal.Logging
@@ -22,7 +22,7 @@ import java.time.{Instant, ZoneOffset}
 import scala.concurrent.duration._
 import scala.language.reflectiveCalls
 
-class KubernetesClient[IO[_] : Concurrent : ContextShift](val underlying: client.KubernetesClient[IO])
+class KubernetesClient[IO[_] : Concurrent](val underlying: client.KubernetesClient[IO])
 extends Client[IO, KubernetesClient[IO]] {
   override def apply[T]
     (implicit e: Engine[IO, KubernetesClient[IO], T], res: ObjectResource[T]): Operations[IO, KubernetesClient[IO], T]

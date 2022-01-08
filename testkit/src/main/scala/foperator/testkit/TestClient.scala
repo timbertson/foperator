@@ -2,11 +2,11 @@ package foperator.testkit
 
 import cats.Eq
 import cats.effect.concurrent.{MVar, MVar2}
-import cats.effect.{Clock, Concurrent, ContextShift}
+import cats.effect.{Clock, Concurrent}
 import cats.implicits._
 import foperator.internal.{Broadcast, Logging}
 import foperator.types._
-import foperator.{Client, Event, Id, ListOptions, Operations}
+import foperator._
 import monix.eval.Task
 import monix.execution.Scheduler
 import monix.execution.schedulers.CanBlock
@@ -14,7 +14,7 @@ import monix.execution.schedulers.CanBlock
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 
-class TestClient[IO[_]: ContextShift](
+class TestClient[IO[_]](
   state: MVar2[IO, TestClient.State],
   val topic: Broadcast[IO, Event[TestClient.Entry]],
   val auditors: List[Event[TestClient.Entry] => IO[Unit]],
@@ -57,7 +57,7 @@ object TestClient extends Client.Companion[Task, TestClient[Task]] {
   private [testkit] type State = Map[ResourceKey, Any]
   private [testkit] type Entry = (ResourceKey, Any)
 
-  def apply[IO[_]](implicit io: Concurrent[IO], cs: ContextShift[IO]): IO[TestClient[IO]] = {
+  def apply[IO[_]](implicit io: Concurrent[IO]): IO[TestClient[IO]] = {
     for {
       state <- MVar.of(Map.empty: State)
       topic <- Broadcast[IO, Event[(ResourceKey, Any)]]
@@ -72,7 +72,7 @@ object TestClient extends Client.Companion[Task, TestClient[Task]] {
   = new TestClientEngineImpl[IO, T]
 
   implicit def implicitOps[IO[_], T](c: TestClient[IO])
-    (implicit io: Concurrent[IO], cs: ContextShift[IO], engine: Engine[IO, TestClient[IO], T], res: ObjectResource[T])
+    (implicit io: Concurrent[IO], engine: Engine[IO, TestClient[IO], T], res: ObjectResource[T])
   : Operations[IO, TestClient[IO], T]
   = new Operations(c)
 }

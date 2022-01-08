@@ -1,7 +1,7 @@
 package foperator
 
 import cats.Eq
-import cats.effect.{Concurrent, ContextShift}
+import cats.effect.Concurrent
 import cats.implicits._
 import foperator.internal.Logging
 import foperator.types._
@@ -86,7 +86,6 @@ class ReconcilerBuilder[IO[_], C, T](implicit
   e: Engine[IO, C, T],
   res: ObjectResource[T],
   io: Concurrent[IO],
-  cs: ContextShift[IO],
 ) extends Logging {
   def empty: Reconciler[IO, C, T] = new ReconcilerImpl[IO, C, T]((_, _) => io.pure(ReconcileResult.Ok), Nil)
 
@@ -128,6 +127,5 @@ object Reconciler {
     e: Engine[IO, C, T],
     res: ObjectResource[T],
     io: Concurrent[IO],
-    cs: ContextShift[IO],
   ) = new ReconcilerBuilder[IO, C, T]()
 }

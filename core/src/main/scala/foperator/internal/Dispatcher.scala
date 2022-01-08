@@ -1,12 +1,11 @@
 package foperator.internal
 
-import cats.effect.concurrent.{Deferred, MVar, MVar2}
-import cats.effect.{Concurrent, ContextShift, Fiber, Resource, Timer}
+import cats.effect.concurrent.{Deferred, MVar, MVar2, Semaphore}
+import cats.effect.{Concurrent, Fiber, Resource, Timer}
 import cats.implicits._
-import fs2.Stream
-import monix.catnap.Semaphore
 import foperator._
 import foperator.types.ObjectResource
+import fs2.Stream
 
 // Kicks off reconcile actions for all tracked resources,
 // supporting periodic reconciles and a concurrency limit
@@ -16,7 +15,7 @@ private[foperator] object Dispatcher extends Logging {
     input: ReconcileSource[IO, T],
     reconcile: Reconciler.Fn[IO, C, T],
     opts: ReconcileOptions,
-  )(implicit io: Concurrent[IO], timer: Timer[IO], cs: ContextShift[IO], res: ObjectResource[T]): IO[Unit] = {
+  )(implicit io: Concurrent[IO], timer: Timer[IO], res: ObjectResource[T]): IO[Unit] = {
     Dispatcher.resource[IO, C, T](
       client,
       input,
@@ -65,7 +64,7 @@ private[foperator] object Dispatcher extends Logging {
 
     // used in tests:
     stateOverride: Option[MVar2[IO, StateMap[IO, Id[T]]]] = None,
-  )(implicit io: Concurrent[IO], timer: Timer[IO], cs: ContextShift[IO], res: ObjectResource[T]): Resource[IO, IO[Unit]] =
+  )(implicit io: Concurrent[IO], timer: Timer[IO], res: ObjectResource[T]): Resource[IO, IO[Unit]] =
   {
     def retryDelay(count: ErrorCount) = opts.retryDelay(count.value)
     val acquire = for {

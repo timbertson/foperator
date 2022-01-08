@@ -1,20 +1,20 @@
 package foperator
 
 import cats.Eq
-import cats.effect.{Concurrent, ContextShift, Timer}
+import cats.effect.{Concurrent, Timer}
 import cats.implicits._
 import foperator.internal.{Dispatcher, Logging}
-import foperator.types.{ObjectResource, _}
+import foperator.types._
 
 class Operations[IO[_], C, T](val client: C)
-  (implicit io: Concurrent[IO], cs: ContextShift[IO], e: Engine[IO, C, T], res: ObjectResource[T])
+  (implicit io: Concurrent[IO], e: Engine[IO, C, T], res: ObjectResource[T])
   extends Logging
 {
   def updateStatus[St](original: T, st: St)
     (implicit sub: HasStatus[T, St]): IO[Unit] = {
     implicit val eq = sub.eqStatus
     if (sub.status(original).exists(_ === st)) {
-      io.pure(original)
+      io.unit
     } else {
       logger.debug(s"Updating status of ${res.id(original)}")
       e.writeStatus(client, original, st)
@@ -29,7 +29,7 @@ class Operations[IO[_], C, T](val client: C)
   def update(t: T)(block: T => T)(implicit eq: Eq[T]): IO[Unit] = {
     val updated = block(t)
     if (t === updated) {
-      io.pure(t)
+      io.unit
     } else {
       io.delay(logger.debug(s"Writing ${res.id(t)}")) >>
       e.write(client, t)
@@ -78,7 +78,7 @@ class Operations[IO[_], C, T](val client: C)
   def runReconciler(
     reconciler: Reconciler[IO, C, T],
     opts: ReconcileOptions = ReconcileOptions()
-  )(implicit timer: Timer[IO], cs: ContextShift[IO]): IO[Unit] = {
+  )(implicit timer: Timer[IO]): IO[Unit] = {
     mirror[Unit] { mirror =>
       Dispatcher.run[IO, C, T](client, mirror, reconciler.reconcile, opts)
     }
@@ -88,6 +88,6 @@ class Operations[IO[_], C, T](val client: C)
     input: ReconcileSource[IO, T],
     reconciler: Reconciler[IO, C, T],
     opts: ReconcileOptions = ReconcileOptions()
-  )(implicit timer: Timer[IO], cs: ContextShift[IO]): IO[Unit] =
+  )(implicit timer: Timer[IO]): IO[Unit] =
     Dispatcher.run[IO, C, T](client, input, reconciler.reconcile, opts)
 }

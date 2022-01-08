@@ -1,12 +1,12 @@
 package foperator
 
 import cats.Monad
+import cats.effect.Concurrent
 import cats.effect.concurrent.{MVar, MVar2}
-import cats.effect.{Concurrent, ContextShift}
 import cats.implicits._
-import fs2.{Chunk, Stream}
 import foperator.internal.{Broadcast, IOUtil, Logging}
 import foperator.types._
+import fs2.{Chunk, Stream}
 
 /**
  * ResourceMirror provides:
@@ -42,7 +42,7 @@ object ResourceMirror extends Logging {
   }
 
   private [foperator] def apply[IO[_], C, T, R](client: C, opts: ListOptions)(block: ResourceMirror[IO, T] => IO[R])
-    (implicit io: Concurrent[IO], cs: ContextShift[IO], res: ObjectResource[T], e: Engine[IO, C, T]): IO[R] = {
+    (implicit io: Concurrent[IO], res: ObjectResource[T], e: Engine[IO, C, T]): IO[R] = {
     for {
       listAndWatch <- e.listAndWatch(client, opts)
       (initial, updates) = listAndWatch

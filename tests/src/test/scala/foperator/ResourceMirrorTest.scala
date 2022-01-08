@@ -2,12 +2,12 @@ package foperator
 
 import cats.effect.concurrent.Deferred
 import cats.implicits._
+import foperator.fixture.Resource
+import foperator.testkit.{TestClient, TestClientEngineImpl}
 import fs2.Stream
 import monix.eval.Task
 import monix.execution.ExecutionModel
 import monix.execution.schedulers.TestScheduler
-import foperator.fixture.Resource
-import foperator.testkit.{TestClient, TestClientEngineImpl}
 import org.scalatest.funspec.AnyFunSpec
 
 import scala.concurrent.Future
@@ -46,7 +46,7 @@ class ResourceMirrorTest extends AnyFunSpec {
         Task.never.doOnCancel(Task {
           cancelled = true
         }).void
-      }(implicitly, implicitly, implicitly, engine))
+      }(implicitly, implicitly, engine))
 
     // Then trigger an error, and our future should fail:
     tick(engine.error.complete(error))
@@ -96,7 +96,7 @@ class ResourceMirrorTest extends AnyFunSpec {
       }
     })
     tick(ops.write(Resource.fixture))
-    assert(f.value.get.get == (Id.of(Resource.fixture), Some(Resource.fixture.spec)))
+    assert(f.value.get.get == ((Id.of(Resource.fixture), Some(Resource.fixture.spec))))
   }
 
   it("supports multiple concurrent ID consumers") {
@@ -111,7 +111,7 @@ class ResourceMirrorTest extends AnyFunSpec {
     tick(ops.write(f1) >> ops.write(f2))
 
     val expectedList = List(Event.Updated(Id.of(f1)), Event.Updated(Id.of(f2)))
-    assert(f.value.get.get == (expectedList, expectedList))
+    assert(f.value.get.get == ((expectedList, expectedList)))
   }
 
   it("cannot skip updates during concurrent subscription") {
