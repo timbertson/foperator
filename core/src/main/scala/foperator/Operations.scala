@@ -16,33 +16,43 @@ class Operations[IO[_], C, T](val client: C)
     if (sub.status(original).exists(_ === st)) {
       io.unit
     } else {
-      logger.debug(s"Updating status of ${res.id(original)}")
-      e.writeStatus(client, original, st)
-    }
+      io.delay(logger.debug(s"Updating status of ${res.id(original)}")) >>
+      e.updateStatus(client, original, st)
+    }.adaptError(new RuntimeException(s"Error updating status of ${res.id(original)}", _))
   }
 
   def write(t: T): IO[Unit] = {
-    logger.debug(s"Writing ${res.id(t)}")
-    e.write(client, t)
-  }
+    res.version(t) match {
+      case None =>
+        io.delay(logger.debug(s"Creating ${res.id(t)}")) >>
+        e.create(client, t)
+      case Some(_) =>
+        io.delay(logger.debug(s"Updating ${res.id(t)}")) >>
+        e.update(client, t)
+    }
+  }.adaptError(new RuntimeException(s"Error writing ${res.id(t)}", _))
 
   def update(t: T)(block: T => T)(implicit eq: Eq[T]): IO[Unit] = {
     val updated = block(t)
     if (t === updated) {
       io.unit
     } else {
-      io.delay(logger.debug(s"Writing ${res.id(t)}")) >>
-      e.write(client, t)
+      write(updated)
     }
   }
 
   def delete(id: Id[T]): IO[Unit] = {
+    _delete(id).adaptError(new RuntimeException(s"Error deleting ${id}", _))
+  }
+
+  def _delete(id: Id[T]): IO[Unit] = {
     io.delay(logger.debug(s"Deleting $id")) >>
     e.delete(client, id)
   }
 
+
   def deleteIfPresent(id: Id[T]): IO[Boolean] = {
-    io.handleErrorWith(delete(id).as(true)) { err =>
+    io.handleErrorWith(_delete(id).as(true)) { err =>
       e.classifyError(err) match {
         case ClientError.NotFound(_) => io.pure(false)
         case other => io.raiseError(other.throwable)
@@ -51,7 +61,8 @@ class Operations[IO[_], C, T](val client: C)
   }
 
   def get(id: Id[T]): IO[Option[T]] = {
-    e.read(client, id)
+    io.delay(logger.debug(s"Getting ${id}")) >>
+    e.read(client, id).adaptError(new RuntimeException(s"Error getting ${id}", _))
   }
 
   def forceWrite(t: T): IO[Unit] = {
@@ -63,9 +74,8 @@ class Operations[IO[_], C, T](val client: C)
       }
       case Some(current) => {
         // resource exists, update based on the current resource version
-        val overwrite = res.withVersion(t, res.version(current))
-        val newVersion = res.version(overwrite)
-        logger.debug("[{}] forceWrite: overwriting current version {}", id, newVersion)
+        val overwrite = res.version(current).map(v => res.withVersion(t, v)).getOrElse(t)
+        logger.debug("[{}] forceWrite: overwriting current version {}", id, res.version(overwrite))
         write(overwrite)
       }
     }

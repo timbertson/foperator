@@ -18,7 +18,7 @@ object AdvancedOperator extends TaskApp {
   val finalizerName = s"AdvancedMain.${Models.apiGroup}"
 
   override def run(args: List[String]): Task[ExitCode] = {
-    Skuber().use { skuber =>
+    Skuber.default.use { skuber =>
       new AdvancedOperator(skuber).run.as(ExitCode.Success)
     }
   }

@@ -32,7 +32,7 @@ object MutationTestCase {
 
 object MutatorTestLive extends TaskApp {
   override def run(args: List[String]): Task[ExitCode] = {
-    Skuber().use { client =>
+    Skuber.default.use { client =>
       MutatorTest.mainFn(args.toArray, seed => {
         MutatorTest.testLive(MutationTestCase.withSeed(seed), client)
       })

@@ -4,9 +4,9 @@ import cats.Eq
 import cats.effect.concurrent.{MVar, MVar2}
 import cats.effect.{Clock, Concurrent}
 import cats.implicits._
+import foperator._
 import foperator.internal.{Broadcast, Logging}
 import foperator.types._
-import foperator._
 import monix.eval.Task
 import monix.execution.Scheduler
 import monix.execution.schedulers.CanBlock
@@ -108,47 +108,53 @@ class TestClientEngineImpl[IO[_], T]
   (implicit io: Concurrent[IO], eq: Eq[T], clock: Clock[IO], res: ObjectResource[T])
   extends Engine[IO, TestClient[IO], T] with Logging
 {
+
   private def _get(state: TestClient.State, id: Id[T]): Option[T] = {
     state.get(ResourceKey.id(id)).map(_.asInstanceOf[T])
   }
 
   override def read(c: TestClient[IO], id: Id[T]): IO[Option[T]] = c.readState.map(map => _get(map, id))
 
-  private val _versionConflict = new TestClientError(ClientError.VersionConflict(new RuntimeException("version conflict")))
-
   private val _notFound = new TestClientError(ClientError.NotFound(new RuntimeException("not found")))
 
-  override def write(c: TestClient[IO], t: T): IO[Unit] = {
-    val nextVersion = {
-      val newVersion = res.version(t) match {
-        case "" => 1
-        case other => other.toInt + 1
-      }
-      res.withVersion(t, newVersion.toString)
-    }
+  private def _nextVersion(t: T): T = {
+    res.withVersion(t, res.version(t) match {
+      case None => "1"
+      case Some(other) => s"${other.toInt + 1}"
+    })
+  }
+
+  private def _update(c: TestClient[IO], t: T): IO[Unit] = {
     c.modifyState_ { stateMap =>
       val id = res.id(t)
       val key = ResourceKey.id(id)
 
-      val update: IO[(TestClient.State, Option[Event[TestClient.Entry]])] = _get(stateMap, id) match {
-        case None => {
-          logger.debug("[{}] creating", res.id(t))
-          io.pure((stateMap.updated(key, t), Some(Event.Updated((key, t)))))
-        }
-        case Some(existing) => {
-          if (res.version(t) =!= res.version(existing)) {
-            logger.debug("[{}] version conflict writing version {} (current version: {})", res.id(t), res.version(t), res.version(existing))
-            io.raiseError(_versionConflict)
-          } else if (res.isSoftDeleted(t) && res.finalizers(t).isEmpty) {
-            logger.debug("[{}] soft-deleted resource has no remaining finalizers; deleting it", res.id(t), res.version(nextVersion))
-            io.pure((stateMap.removed(key), Some(Event.Deleted((key, t)))))
-          } else if (existing === t) {
-            // we don't emit an event on a no-op change, otherwise we'd reconcile indefinitely
-            logger.debug("[{}] no-op update", res.id(t))
-            io.pure((stateMap, None))
-          } else {
-            logger.debug("[{}] updated (new version: {})", res.id(t), res.version(nextVersion))
-            io.pure((stateMap.updated(key, nextVersion), Some(Event.Updated((key, nextVersion)))))
+      val update: IO[(TestClient.State, Option[Event[TestClient.Entry]])] = {
+        val existing = _get(stateMap, id)
+        (existing, res.version(t)) match {
+          case (Some(_), None) => io.raiseError(new RuntimeException(s"Attempted to create an existing resource: $id"))
+          case (None, Some(_)) => io.raiseError(new RuntimeException(s"Attempted to update a nonexistent resource: $id"))
+          case (None, None) => {
+            logger.debug("[{}] creating", res.id(t))
+            val written = _nextVersion(t)
+            io.pure((stateMap.updated(key, written), Some(Event.Updated((key, written)))))
+          }
+          case (Some(existing), Some(updatingVersion)) => { // update
+            if (!res.version(existing).contains_(updatingVersion)) {
+              io.raiseError(new TestClientError(ClientError.VersionConflict(
+                new RuntimeException(s"version conflict (stored: ${res.version(existing)}, writing: ${res.version(t)})"))))
+            } else if (res.isSoftDeleted(t) && res.finalizers(t).isEmpty) {
+              logger.debug("[{}] soft-deleted resource has no remaining finalizers; deleting it", res.id(t))
+              io.pure((stateMap.removed(key), Some(Event.Deleted((key, t)))))
+            } else if (existing === t) {
+              // we don't emit an event on a no-op change, otherwise we'd reconcile indefinitely
+              logger.debug("[{}] no-op update", res.id(t))
+              io.pure((stateMap, None))
+            } else {
+              val written = _nextVersion(t)
+              logger.debug("[{}] updated (new version: {})", res.id(t), res.version(written))
+              io.pure((stateMap.updated(key, written), Some(Event.Updated((key, written)))))
+            }
           }
         }
       }
@@ -163,7 +169,25 @@ class TestClientEngineImpl[IO[_], T]
     }
   }
 
-  override def writeStatus[St](c: TestClient[IO], t: T, st: St)(implicit sub: HasStatus[T, St]): IO[Unit] = write(c, sub.withStatus(t, st))
+  override def update(c: TestClient[IO], t: T): IO[Unit] = {
+    if (res.version(t).isEmpty) {
+      io.raiseError(
+        new RuntimeException(s"Can't update a resource without a version (try create?): ${res.id(t)}"))
+    } else {
+      _update(c, t)
+    }
+  }
+
+  override def create(c: TestClient[IO], t: T): IO[Unit] = {
+    if (res.version(t).isDefined) {
+      io.raiseError(
+        new RuntimeException(s"Can't create a resource with a version (try update?): ${res.id(t)}"))
+    } else {
+      _update(c, t)
+    }
+  }
+
+  override def updateStatus[St](c: TestClient[IO], t: T, st: St)(implicit sub: HasStatus[T, St]): IO[Unit] = update(c, sub.withStatus(t, st))
 
   override def classifyError(e: Throwable): ClientError = e match {
     case ce: TestClientError => ce.e

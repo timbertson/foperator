@@ -24,7 +24,7 @@ import scala.util.{Failure, Random, Success}
 
 object Simple extends TaskApp with Logging {
   override def run(args: List[String]): Task[ExitCode] = {
-    Skuber().use { client =>
+    Skuber.default.use { client =>
       val simple = new SimpleOperator(client)
       simple.install >> Mutator.withResourceMirrors(client) { (greetings, people) =>
         Task.parZip2(
@@ -38,7 +38,7 @@ object Simple extends TaskApp with Logging {
 
 object Advanced extends TaskApp {
   override def run(args: List[String]): Task[ExitCode] = {
-    Skuber().use { client =>
+    Skuber.default.use { client =>
       val advanced = new AdvancedOperator(client)
       advanced.install >> Mutator.withResourceMirrors(client) { (greetings, people) =>
         Task.parZip2(
@@ -52,7 +52,8 @@ object Advanced extends TaskApp {
 
 object Standalone extends TaskApp {
   override def run(args: List[String]): Task[ExitCode] = {
-    Skuber().use { client =>
+    Skuber.default.use { client =>
+      new AdvancedOperator(client).install >>
       Mutator.withResourceMirrors(client) { (greetings, people) =>
         new Mutator(client, greetings, people).run
       }
@@ -194,6 +195,14 @@ class Mutator[C](client: C, greetings: ResourceMirror[Task, Greeting], people: R
   ) extends Logging {
 
   import Mutator._
+
+  def run: Task[ExitCode] = {
+    Task.parZip3(
+      watchResource(people),
+      watchResource(greetings),
+      runRepl
+    ).map(_ => ExitCode.Success)
+  }
 
   def rootDecision(random: Random, peopleUnsorted: List[Person], greetingsUnsorted: List[Greeting]): Decision = {
     // explicitly sort so that using the same random seed will yield the same result
@@ -357,14 +366,6 @@ class Mutator[C](client: C, greetings: ResourceMirror[Task, Greeting], people: R
     }.mapEval(_ => Task(println("\n\n\n"))).completedL
 
     Task.parZip2(readLoop, consume).void
-  }
-
-  def run: Task[ExitCode] = {
-    Task.parZip3(
-      watchResource(people),
-      watchResource(greetings),
-      runRepl
-    ).map(_ => ExitCode.Success)
   }
 
   private def watchResource[T](mirror: ResourceMirror[Task, T])(implicit res: ObjectResource[T], pp: PrettyPrint[T]): Task[Unit] = {

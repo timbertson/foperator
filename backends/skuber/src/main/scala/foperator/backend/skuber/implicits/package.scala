@@ -9,7 +9,7 @@ import skuber.{CustomResource, ObjectMeta, ResourceDefinition}
 
 import java.time.{Instant, ZoneOffset}
 
-package object implicits extends foperator.CommonImplicits {
+package object implicits {
   // implicits that don't have a better place
 
   implicit val metadataEq: Eq[ObjectMeta] = Eq.fromUniversalEquals
@@ -43,7 +43,10 @@ package object implicits extends foperator.CommonImplicits {
 
     override def replaceFinalizers(t: T, f: List[String]): T = ed.updateMetadata(t, t.metadata.copy(finalizers = Some(f)))
 
-    override def version(t: T): String = t.metadata.resourceVersion
+    override def version(t: T): Option[String] = t.metadata.resourceVersion match {
+      case "" => None
+      case other => Some(other)
+    }
 
     override def withVersion(t: T, newVersion: String): T = ed.updateMetadata(t, t.metadata.copy(resourceVersion = newVersion))
 

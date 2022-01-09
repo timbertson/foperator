@@ -15,8 +15,11 @@ import io.k8s.apimachinery.pkg.apis.meta.v1.{ObjectMeta, Time}
 import monix.eval.Task
 import monix.eval.instances.CatsConcurrentEffectForTask
 import monix.execution.Scheduler
+import org.http4s.client.UnexpectedStatus
 import org.http4s.{Status, Uri}
+import org.typelevel.log4cats.Logger
 
+import java.io.File
 import java.time.format.DateTimeFormatter
 import java.time.{Instant, ZoneOffset}
 import scala.concurrent.duration._
@@ -34,6 +37,11 @@ object KubernetesClient {
 
   class Companion[IO[_]](implicit cs: ContextShift[IO], ce: ConcurrentEffect[IO]) extends Client.Companion[IO, KubernetesClient[IO]] {
     def wrap(underlying: client.KubernetesClient[IO]): KubernetesClient[IO] = new KubernetesClient(underlying)
+
+    def default(implicit logger: Logger[IO]): Resource[IO, KubernetesClient[IO]] = for {
+      path <- Resource.eval(KubeconfigPath.fromEnv[IO])
+      client <- client.KubernetesClient[IO](KubeConfig.fromFile(new File(path)))
+    } yield wrap(client)
 
     def apply(config: KubeConfig): Resource[IO, KubernetesClient[IO]] = client.KubernetesClient[IO](config).map(wrap)
 
@@ -91,7 +99,7 @@ object KubernetesClient {
 
     override def replaceFinalizers(t: T, f: List[String]): T = withMeta(t, meta(t).copy(finalizers = Some(f)))
 
-    override def version(t: T): String = t.metadata.flatMap(_.resourceVersion).getOrElse("")
+    override def version(t: T): Option[String] = t.metadata.flatMap(_.resourceVersion)
 
     override def id(t: T): Id[T] = t.metadata.map { m =>
       Id[T](m.namespace.getOrElse(""), m.name.getOrElse(""))
@@ -121,7 +129,8 @@ object KubernetesClient {
     private def ns(c: KubernetesClient[IO], id: Id[T]) =
       api.namespaceApi(c.underlying, id.namespace)
 
-    // TODO does this happen by default? feels liks it should, and if not the kclient readme is missing error handling
+    // TODO does this really not happen by default?
+    // feels like it should, and if not the kclient readme is missing error handling
     private def handleResponse(status: IO[Status]): IO[Unit] = status.flatMap { st =>
       if (st.isSuccess) {
         io.unit
@@ -130,22 +139,32 @@ object KubernetesClient {
       }
     }
 
-    override def classifyError(e: Throwable): ClientError = e match {
-      case s: StatusError => s.status match {
-        case Status.NotFound => ClientError.NotFound(e)
-        case Status.Conflict => ClientError.VersionConflict(e)
+    override def classifyError(e: Throwable): ClientError = {
+      val status = e match {
+        case s: StatusError => Some(s.status) // from handleResponse (e.g. write)
+        case s: UnexpectedStatus => Some(s.status) // from anything using expect[] (e.g. get)
+        case _ => None
+      }
+      status match {
+        case Some(Status.NotFound) => ClientError.NotFound(e)
+        case Some(Status.Conflict) => ClientError.VersionConflict(e)
         case _ => ClientError.Unknown(e)
       }
-      // TODO does kclient throw its own errors?
-      case _ => ClientError.Unknown(e)
     }
 
-    // TODO this doesn't report 404 correctly
-    override def read(c: KubernetesClient[IO], t: Id[T]): IO[Option[T]] = ns(c, t).get(t.name).map(Some.apply)
+    override def read(c: KubernetesClient[IO], id: Id[T]): IO[Option[T]] =
+      ns(c, id).get(id.name).map(t => Some(t): Option[T]).handleErrorWith { e =>
+        classifyError(e) match {
+          case _: ClientError.NotFound => io.pure(None)
+          case _ => io.raiseError(e)
+        }
+      }
 
-    override def write(c: KubernetesClient[IO], t: T): IO[Unit] = handleResponse(ns(c, res.id(t)).replace(t))
+    override def create(c: KubernetesClient[IO], t: T): IO[Unit] = handleResponse(ns(c, res.id(t)).create(t))
 
-    override def writeStatus[St](c: KubernetesClient[IO], t: T, st: St)(implicit sub: HasStatus[T, St]): IO[Unit] =
+    override def update(c: KubernetesClient[IO], t: T): IO[Unit] = handleResponse(ns(c, res.id(t)).replace(t))
+
+    override def updateStatus[St](c: KubernetesClient[IO], t: T, st: St)(implicit sub: HasStatus[T, St]): IO[Unit] =
       handleResponse(api.updateStatus(c.underlying, sub.withStatus(t, st)))
 
     override def delete(c: KubernetesClient[IO], id: Id[T]): IO[Unit] = handleResponse(ns(c, id).delete(id.name))

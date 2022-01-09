@@ -54,7 +54,7 @@ private class ReconcilerImpl[IO[_], C, T](
             // Note that we don't invoke the user reconciler in this case,
             // we rely on a re-reconcile being triggered by the metadata addition
             logger.info("[{}] Adding finalizer {} to {}", res.kind, finalizerNames.mkString(", "), res.id(resource))
-            e.write(client, updated).as(ReconcileResult.Ok)
+            e.update(client, updated).as(ReconcileResult.Ok)
           }
         }
       }
@@ -69,7 +69,7 @@ private class ReconcilerImpl[IO[_], C, T](
                 // we could probably run multiple finalizers before updating,
                 // but there's almost never more than one :shrug:
                 fn(client, resource).flatMap { (_: Unit) =>
-                  e.write(client, updated).void
+                  e.update(client, updated).void
                 }
               }
               case None => loop(tail)
@@ -99,7 +99,7 @@ class ReconcilerBuilder[IO[_], C, T](implicit
     full((client, resource) => {
       fn(resource).flatMap { newResource =>
         if (newResource =!= resource) {
-          e.write(client, newResource).as(ReconcileResult.Ok)
+          e.update(client, newResource).as(ReconcileResult.Ok)
         } else {
           io.pure(ReconcileResult.Ok)
         }

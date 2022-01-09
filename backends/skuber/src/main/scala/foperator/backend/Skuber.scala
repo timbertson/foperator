@@ -1,7 +1,10 @@
 package foperator.backend
 
+import _root_.skuber
+import _root_.skuber.api.client.{EventType, KubernetesClient, LoggingConfig, WatchEvent}
+import _root_.skuber.json.format.ListResourceFormat
+import _root_.skuber.{HasStatusSubresource, LabelSelector, ResourceDefinition}
 import akka.actor.ActorSystem
-import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.Sink
 import cats.data.NonEmptyList
 import cats.effect.Resource
@@ -15,15 +18,12 @@ import monix.eval.instances.CatsConcurrentEffectForTask
 import monix.execution.Scheduler
 import monix.execution.schedulers.TestScheduler
 import play.api.libs.json.Format
-import _root_.skuber
-import _root_.skuber.api.client.{EventType, KubernetesClient, WatchEvent}
-import _root_.skuber.json.format.ListResourceFormat
-import _root_.skuber.{HasStatusSubresource, LabelSelector, ResourceDefinition}
 
+import java.nio.file.Paths
 import scala.concurrent.ExecutionContext
 
 class Skuber
-  (val underlying: KubernetesClient, val scheduler: Scheduler, val materializer: ActorMaterializer)
+  (val underlying: KubernetesClient, val scheduler: Scheduler, val actorSystem: ActorSystem)
   extends Client[Task, Skuber] {
   override def apply[T]
     (implicit e: Engine[Task, Skuber, T], res: ObjectResource[T]): Operations[Task, Skuber, T]
@@ -38,18 +38,21 @@ object Skuber extends Client.Companion[Task, Skuber] {
     : EngineFor[T]
     = new EngineImpl[T]
 
-  def apply(
-    scheduler: Scheduler = Scheduler.global,
-    config: Config = ConfigFactory.load(),
-    clientOverride: Option[KubernetesClient] = None,
-  ): Resource[Task, Skuber] = {
-    Skuber.actorSystem(scheduler, config).flatMap { actorSystem =>
-      Resource.make(Task.delay {
-        val materializer: ActorMaterializer = ActorMaterializer()(actorSystem)
-        val client: KubernetesClient = clientOverride.getOrElse(skuber.k8sInit(config)(actorSystem, materializer))
-        new Skuber(client, scheduler, materializer)
+  def wrap(client: KubernetesClient, scheduler: Scheduler, actorSystem: ActorSystem): Skuber
+    = new Skuber(client, scheduler, actorSystem)
+
+  def default: Resource[Task, Skuber] = {
+    val scheduler = Scheduler.global
+    for {
+      config <- Resource.eval(Task.delay(ConfigFactory.load()))
+      actorSystem <- Skuber.actorSystem(scheduler, config)
+      configPath <- Resource.eval(KubeconfigPath.fromEnv[Task])
+      k8sConfig <- Resource.eval(Task.fromTry(skuber.api.Configuration.parseKubeconfigFile(Paths.get(configPath))))
+      client <- Resource.make(Task.delay {
+        val client = skuber.api.client.init(k8sConfig.currentContext, LoggingConfig())(actorSystem)
+        new Skuber(client, scheduler, actorSystem)
       })(skuber => Task(skuber.underlying.close))
-    }
+    } yield client
   }
 
   def overrideConfig(config: Config) = configOverrides.withFallback(config)
@@ -92,10 +95,13 @@ object Skuber extends Client.Companion[Task, Skuber] {
     override def read(c: Skuber, t: Id[T]): Task[Option[T]] =
       Task.deferFuture(c.underlying.usingNamespace(t.namespace).getOption(t.name))
 
-    override def write(c: Skuber, t: T): Task[Unit] =
+    override def create(c: Skuber, t: T): Task[Unit] =
+      Task.deferFuture(c.underlying.create(t)).void
+
+    override def update(c: Skuber, t: T): Task[Unit] =
       Task.deferFuture(c.underlying.update(t)).void
 
-    override def writeStatus[St](c: Skuber, t: T, st: St)(implicit sub: HasStatus[T, St]): Task[Unit] = {
+    override def updateStatus[St](c: Skuber, t: T, st: St)(implicit sub: HasStatus[T, St]): Task[Unit] = {
       // we assume that HasStatus corresponds to substatus
       implicit val skuberStatus: HasStatusSubresource[T] = new skuber.HasStatusSubresource[T] {}
       Task.deferFuture(c.underlying.updateStatus(sub.withStatus(t, st))).void
@@ -106,7 +112,7 @@ object Skuber extends Client.Companion[Task, Skuber] {
 
     override def listAndWatch(c: Skuber, opts: ListOptions): Task[(List[T], fs2.Stream[Task, Event[T]])] = {
       implicit val lrf: Format[skuber.ListResource[T]] = ListResourceFormat[T]
-      implicit val mat: ActorMaterializer = c.materializer
+      implicit val sys: ActorSystem = c.actorSystem
       implicit val io: CatsConcurrentEffectForTask = Task.catsEffect(c.scheduler)
 
       // skuber lets you build typed requirements, but they all end up as a toString anyway.

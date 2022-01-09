@@ -11,7 +11,7 @@ import monix.execution.schedulers.TestScheduler
 import org.scalatest.funspec.AnyFunSpec
 
 import scala.concurrent.Future
-import scala.util.Failure
+import scala.util.Success
 
 class FallibleEngine extends TestClientEngineImpl[Task, Resource] {
   val error = Deferred.unsafe[Task, Throwable]
@@ -50,7 +50,7 @@ class ResourceMirrorTest extends AnyFunSpec {
 
     // Then trigger an error, and our future should fail:
     tick(engine.error.complete(error))
-    assert(f.value == Some(Failure(error)))
+    assert(f.value.flatMap(_.failed.toOption).map(_.getCause) == Some(error))
   }
 
   it("is populated with the initial resource set") {
@@ -80,10 +80,10 @@ class ResourceMirrorTest extends AnyFunSpec {
 
     def id(name: String) = Id.apply("default", name)
     assert(f.value.get.get == List(
-      Event.Updated(id("f1")),
-      Event.Updated(id("f2")),
-      Event.Updated(id("f3")),
-      Event.Deleted(id("f3")),
+      id("f1"),
+      id("f2"),
+      id("f3"),
+      id("f3"),
     ))
   }
 
@@ -110,7 +110,7 @@ class ResourceMirrorTest extends AnyFunSpec {
 
     tick(ops.write(f1) >> ops.write(f2))
 
-    val expectedList = List(Event.Updated(Id.of(f1)), Event.Updated(Id.of(f2)))
+    val expectedList = List(Id.of(f1), Id.of(f2))
     assert(f.value.get.get == ((expectedList, expectedList)))
   }
 
@@ -130,6 +130,6 @@ class ResourceMirrorTest extends AnyFunSpec {
       ops.write(f2)
     ))
 
-    assert(f.value.get.get._1.sorted == List(Id.of(f1)))
+    assert(f.value.map(_.map(_._1.sorted)) == Some(Success(List(Id.of(f1)))))
   }
 }

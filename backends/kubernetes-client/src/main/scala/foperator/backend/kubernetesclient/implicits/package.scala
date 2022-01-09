@@ -15,7 +15,7 @@ import org.http4s.Status
 
 import scala.reflect.ClassTag
 
-package object implicits extends foperator.CommonImplicits {
+package object implicits {
   import foperator.backend.KubernetesClient._
 
   // implicits that don't have a better place

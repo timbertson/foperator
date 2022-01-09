@@ -1,6 +1,5 @@
 package foperator.sample
 
-
 object Models {
   import cats.Eq
 
@@ -18,10 +17,10 @@ object Models {
 
   object Skuber {
     // implicits / definitions required for skuber operators
+    import play.api.libs.json.{Format, JsNull, JsSuccess, Json}
     import skuber.ResourceSpecification.{Names, Scope}
     import skuber.apiextensions.CustomResourceDefinition
     import skuber.{CustomResource, ObjectMeta, ResourceDefinition, ResourceSpecification}
-    import play.api.libs.json.{Format, JsNull, JsSuccess, Json}
 
     type Greeting = CustomResource[GreetingSpec,GreetingStatus]
 
@@ -68,16 +67,16 @@ object Models {
   object KubernetesClient {
     // implicits / definitions required for kubernetes-client operators
 
+    import com.goyeau.kubernetes.client.crd._
+    import foperator.backend.kubernetesclient.CrdContext
     import io.k8s.apiextensionsapiserver.pkg.apis.apiextensions.v1._
     import io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
-    import com.goyeau.kubernetes.client.crd.CustomResource
-    import foperator.backend.kubernetesclient.CrdContext
 
     val greetingCrd = CustomResourceDefinition(
-      metadata = Some(ObjectMeta(name = Some("greeting." + apiGroup))),
+      metadata = Some(ObjectMeta(name = Some("greetings." + apiGroup))),
       spec = CustomResourceDefinitionSpec(
         group = apiGroup,
-        scope = "Namespace",
+        scope = "Namespaced",
         names = CustomResourceDefinitionNames(
           plural = "greetings",
           singular = Some("greeting"),
@@ -87,7 +86,27 @@ object Models {
         versions = List(
           CustomResourceDefinitionVersion(
             name = version, served = true, storage = true,
-            subresources = Some(CustomResourceSubresources(status = Some(CustomResourceSubresourceStatus())))
+            subresources = Some(CustomResourceSubresources(status = Some(CustomResourceSubresourceStatus()))),
+            schema = Some(CustomResourceValidation(openAPIV3Schema = Some(JSONSchemaProps(
+              `type` = Some("object"),
+              properties = Some(Map(
+                "spec" -> JSONSchemaProps(
+                  `type` = Some("object"),
+                  properties = Some(Map(
+                    "name" -> JSONSchemaProps(`type`= Some("string")),
+                    "surname" -> JSONSchemaProps(`type`= Some("string")),
+                  ))
+                ),
+                "status" -> JSONSchemaProps(
+                  `type` = Some("object"),
+                  properties = Some(Map(
+                    "message" -> JSONSchemaProps(`type`= Some("string")),
+                    "people" -> JSONSchemaProps(`type`= Some("array"), items = Some(SchemaNotArrayValue(JSONSchemaProps(`type` = Some("string"))))),
+                  )),
+                  required = Some(List("message", "people"))
+                )
+              )),
+            ))))
           )
         )
       )

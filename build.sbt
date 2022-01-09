@@ -59,10 +59,10 @@ lazy val skuber = (project in file("backends/skuber"))
   .settings(
     name := "foperator-backend-skuber",
     libraryDependencies ++= Seq(
-      "io.skuber" %% "skuber" % "2.4.0",
+      "io.skuber" %% "skuber" % "2.6.2",
       "co.fs2" %% "fs2-reactive-streams" % fs2Version,
       monixReactive,
-      "com.typesafe.akka" %% "akka-slf4j" % "2.5.29",
+      "com.typesafe.akka" %% "akka-slf4j" % "2.6.15",
     )
   ).dependsOn(core)
 
@@ -85,8 +85,15 @@ lazy val sample = (project in file("sample"))
     name := "foperator-sample",
     libraryDependencies ++= Seq(logback, scalatest),
     packMain := Map(
+      // sample operators
       "simple" -> "foperator.sample.SimpleOperator",
       "advanced" -> "foperator.sample.AdvancedOperator",
+
+      // generic
+      "skuber" -> "foperator.sample.generic.SkuberMain",
+      "kubernetes-client" -> "foperator.sample.generic.KubernetesClientMain",
+
+      // mutator
       "simple-mutator" -> "foperator.sample.mutator.Simple",
       "advanced-mutator" -> "foperator.sample.mutator.Advanced",
       "mutator" -> "foperator.sample.mutator.Standalone",

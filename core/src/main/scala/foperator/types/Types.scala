@@ -8,7 +8,7 @@ import java.time.Instant
 // Typeclasses used throughout foperator
 
 trait HasVersion[T] {
-  def version(t: T): String
+  def version(t: T): Option[String]
   def withVersion(t: T, newVersion: String): T
 }
 
@@ -64,8 +64,9 @@ object ClientError {
 trait Engine[IO[_], C, T] {
   def read(i: C, t: Id[T]): IO[Option[T]]
 
-  def write(i: C, t: T): IO[Unit]
-  def writeStatus[St](i: C, t: T, st: St)(implicit sub: HasStatus[T, St]): IO[Unit]
+  def create(i: C, t: T): IO[Unit]
+  def update(i: C, t: T): IO[Unit]
+  def updateStatus[St](i: C, t: T, st: St)(implicit sub: HasStatus[T, St]): IO[Unit]
 
   def classifyError(e: Throwable): ClientError
 

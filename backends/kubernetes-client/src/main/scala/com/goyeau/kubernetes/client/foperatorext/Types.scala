@@ -28,10 +28,10 @@ object Types {
 
   // nested API, e.g. NamespacedPodsApi
   type NamespacedResourceAPI[IO[_], T<:HasMetadata, TList<:ListOf[T]] =
-    Replaceable[IO, T]
+    Creatable[IO, T]
+    with Replaceable[IO, T]
     with Gettable[IO, T]
     with Listable[IO, TList]
     with Deletable[IO]
-    with GroupDeletable[IO]
     with Watchable[IO, T]
 }

@@ -31,27 +31,26 @@ private[foperator] object Dispatcher extends Logging {
     input: Stream[IO, K]
   )(implicit io: Concurrent[IO]): IO[Unit] = {
     val process: IO[Unit] = {
-      io.delay(logger.debug("Starting runloop")) >>
-        input.evalMap[IO, Unit] { id =>
-          state.modify_ { stateMap =>
-            (stateMap.get(id) match {
-              // if running, mark dirty. otherwise, spawn a reconcile loop
-              case Some((state, fiber)) => {
-                loop.markDirty(state).map { s =>
-                  logger.debug("State ({}): {} -> {}", id, state, s)
-                  (s, fiber)
-                }
+      input.evalMap[IO, Unit] { id =>
+        state.modify_ { stateMap =>
+          (stateMap.get(id) match {
+            // if running, mark dirty. otherwise, spawn a reconcile loop
+            case Some((state, fiber)) => {
+              loop.markDirty(state).map { s =>
+                logger.debug("State ({}): {} -> {}", id, state, s)
+                (s, fiber)
               }
-              case None => {
-                logger.debug("Spawning reconcile loop for {}", id)
-                val task = io.handleErrorWith(loop.run(id))(error.complete)
-                io.start(task).map(fiber => (Reconciling, fiber))
-              }
-            }).map { newState =>
-              stateMap.updated(id, newState)
             }
+            case None => {
+              logger.debug("Spawning reconcile loop for {}", id)
+              val task = io.handleErrorWith(loop.run(id))(error.complete)
+              io.start(task).map(fiber => (Reconciling, fiber))
+            }
+          }).map { newState =>
+            stateMap.updated(id, newState)
           }
-        }.compile.drain
+        }
+      }.compile.drain
     }
     io.race(error.get.flatMap(io.raiseError[Unit]), process).void
   }
@@ -77,13 +76,14 @@ private[foperator] object Dispatcher extends Logging {
         semaphore.withPermit(input.get(id).flatMap {
           case None => io.pure(None)
           case Some(r) => for {
-            _ <- io.delay(logger.info("[{}] Reconciling {} v{}", res.kind, id, res.version(r.raw)))
+            _ <- io.delay(logger.info("[{}] Reconciling {} v{}", res.kind, id, res.version(r.raw).getOrElse("0")))
             result <- reconcile(client, r)
           } yield Some(result)
         })
 
       val resourceLoop = new ReconcileLoop.Impl[IO, Id[T]](action, updater, retryDelay)
-      (main(state, error, resourceLoop, input.ids), cancel(state))
+      val run = io.delay(logger.info("[{}] Starting reconciler", res.kind)) >> main(state, error, resourceLoop, input.ids)
+      (run, cancel(state))
     }
     Resource(acquire)
   }

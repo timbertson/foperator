@@ -11,7 +11,7 @@ import skuber.apiextensions.CustomResourceDefinition
 
 object SimpleOperator extends TaskApp {
   override def run(args: List[String]): Task[ExitCode] = {
-    Skuber().use { skuber =>
+    Skuber.default.use { skuber =>
       new SimpleOperator(skuber).run.as(ExitCode.Success)
     }
   }
