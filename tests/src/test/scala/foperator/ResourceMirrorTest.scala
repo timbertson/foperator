@@ -1,17 +1,14 @@
 package foperator
 
-import cats.effect.concurrent.Deferred
+import cats.effect.concurrent.{Deferred, Ref}
 import cats.implicits._
 import foperator.fixture.Resource
-import foperator.testkit.{TestClient, TestClientEngineImpl}
+import foperator.internal.Logging
+import foperator.testkit.{TestClient, TestClientEngineImpl, TestSchedulerUtil}
 import fs2.Stream
 import monix.eval.Task
 import monix.execution.ExecutionModel
 import monix.execution.schedulers.TestScheduler
-import org.scalatest.funspec.AnyFunSpec
-
-import scala.concurrent.Future
-import scala.util.Success
 
 class FallibleEngine extends TestClientEngineImpl[Task, Resource] {
   val error = Deferred.unsafe[Task, Throwable]
@@ -23,113 +20,124 @@ class FallibleEngine extends TestClientEngineImpl[Task, Resource] {
   }
 }
 
-class ResourceMirrorTest extends AnyFunSpec {
-
-  val testScheduler = TestScheduler(ExecutionModel.AlwaysAsyncExecution)
+object ResourceMirrorTest extends SimpleTimedTaskSuite with Logging {
   val f1 = Resource.fixture.copy(name = "f1")
   val f2 = Resource.fixture.copy(name = "f2")
   val f3 = Resource.fixture.copy(name = "f3")
+  val f4 = Resource.fixture.copy(name = "f4")
 
-  private def tick[T](t: Task[T]): Future[T] = {
-    val f = t.runToFuture(testScheduler)
-    testScheduler.tick()
-    f
+  def takeUnique(expectedSize: Int)(stream: Stream[Task, Id[Resource]]) = {
+    stream.scan(Set.empty[Id[Resource]]){ (set, item) =>
+      logger.debug(s"takeUnique: saw element ${item}")
+      set.incl(item)
+    }.find(_.size == expectedSize).compile.toList.map(_.flatten.sorted)
   }
 
-  it("aborts the `use` block on error") {
+  timedTest("aborts the `use` block on error") {
     val engine = new FallibleEngine
     val error = new RuntimeException("injected error from test")
-    var cancelled = false
-    val client = TestClient.unsafe()
+    for {
+      client <- TestClient[Task]
+      cancelled <- Ref.of(false)
+      fiber <- ResourceMirror.apply[Task, TestClient[Task], Resource, Unit](client, ListOptions.all) { _ =>
+        Task.never.doOnCancel(cancelled.set(true))
+      }(implicitly, implicitly, engine).start
 
-    val f = tick(ResourceMirror.apply[Task, TestClient[Task], Resource, Unit](client, ListOptions.all) { _ =>
-        Task.never.doOnCancel(Task {
-          cancelled = true
-        }).void
-      }(implicitly, implicitly, engine))
-
-    // Then trigger an error, and our future should fail:
-    tick(engine.error.complete(error))
-    assert(f.value.flatMap(_.failed.toOption).map(_.getCause) == Some(error))
+      // Then trigger an error, and our fiber should fail:
+      _ <- engine.error.complete(error)
+      result <- fiber.join.materialize
+    } yield {
+      // getCause because operational failures are wrapped in a descriptive exception
+      expect(result.failed.toOption.map(_.getCause) == Some(error))
+    }
   }
 
-  it("is populated with the initial resource set") {
-    val ops = TestClient.unsafe().apply[Resource]
-    tick(ops.write(Resource.fixture))
-
-    val f = tick(ops.mirror { mirror =>
-      mirror.active.map(_.values.toList)
-    })
-
-    assert(f.value.get.get.map(_.spec) == List(Resource.fixture.spec))
-  }
-
-  it("emits IDs for updates") {
-    val ops = TestClient.unsafe().apply[Resource]
-    tick(ops.write(f1))
-
-    val f = tick(ops.mirror { mirror =>
-      mirror.ids.take(4).compile.toList
-    })
-
-    tick(
-      ops.write(f2) >>
-      ops.write(f3) >>
-      ops.delete(Id.of(f3))
-    )
-
-    def id(name: String) = Id.apply("default", name)
-    assert(f.value.get.get == List(
-      id("f1"),
-      id("f2"),
-      id("f3"),
-      id("f3"),
-    ))
-  }
-
-  it("updates internal state before emitting an ID") {
-    val ops = TestClient.unsafe().apply[Resource]
-    val f = tick(ops.mirror { mirror =>
-      mirror.ids.take(1).compile.toList.flatMap {
-        case List(id) => mirror.getActive(id).map(res => (id, res.map(_.spec)))
-        case _ => ???
+  timedTest("is populated with the initial resource set") {
+    for {
+      ops <- TestClient[Task].map(_.apply[Resource])
+      _ <- ops.write(f1)
+      listed <- ops.mirror { mirror =>
+        mirror.active.map(_.values.toList)
       }
-    })
-    tick(ops.write(Resource.fixture))
-    assert(f.value.get.get == ((Id.of(Resource.fixture), Some(Resource.fixture.spec))))
+    } yield {
+      expect(listed.map(_.spec) === List(f1.spec))
+    }
   }
 
-  it("supports multiple concurrent ID consumers") {
-    val ops = TestClient.unsafe().apply[Resource]
-    val f = tick(ops.mirror { mirror =>
-      Task.parZip2(
-        mirror.ids.take(2).compile.toList,
-        mirror.ids.take(2).compile.toList
-      )
-    })
-
-    tick(ops.write(f1) >> ops.write(f2))
-
-    val expectedList = List(Id.of(f1), Id.of(f2))
-    assert(f.value.get.get == ((expectedList, expectedList)))
+  timedTest("emits IDs for updates") {
+    val testScheduler = TestScheduler()
+    for {
+      ops <- TestClient[Task].map(_.apply[Resource])
+      fiber <- TestSchedulerUtil.start(testScheduler, ops.mirror { mirror =>
+        mirror.ids.take(4).compile.toList
+      })
+      // make sure we're subscribed
+      _ <- TestSchedulerUtil.tick(testScheduler)
+      _ <- (ops.write(f1) >> ops.write(f2) >> ops.write(f3) >> ops.delete(Id.of(f3)))
+        .executeOn(testScheduler).start
+      ids <- TestSchedulerUtil.await(testScheduler, fiber.join)
+    } yield {
+      def id(name: String) = Id.apply[Resource]("default", name)
+      assert(ids.sorted == List(
+        id("f1"),
+        id("f2"),
+        id("f3"),
+        id("f3"),
+      ))
+    }
   }
 
-  it("cannot skip updates during concurrent subscription") {
+  timedTest("updates internal state before emitting an ID") {
+    for {
+      ops <- TestClient[Task].map(_.apply[Resource])
+      fiber <- ops.mirror { mirror =>
+        mirror.ids.evalMap(id => mirror.getActive(id).map(res => (id, res.map(_.spec)))).take(1).compile.toList
+      }.start
+      _ <- ops.write(f1)
+      ids <- fiber.join
+    } yield {
+      expect(ids === List((Id.of(f1), Some(f1.spec))))
+    }
+  }
+
+  timedTest("supports multiple concurrent ID consumers") {
+    for {
+      ops <- TestClient[Task].map(_.apply[Resource])
+      fiber <- ops.mirror { mirror =>
+        Task.parZip2(
+          takeUnique(2)(mirror.ids),
+          takeUnique(2)(mirror.ids)
+        )
+      }.start
+      _ <- ops.write(f1) >> ops.write(f2)
+      ids <- fiber.join
+    } yield {
+      val expectedList = List(Id.of(f1), Id.of(f2))
+      expect(ids == ((expectedList, expectedList)))
+    }
+  }
+
+  timedTest("cannot skip updates during concurrent subscription") {
     // if we subscribe concurrently to an item's creation, then either:
-    // we observe the creation as part of the initial set, or
+    // we observe the creation as part of the initial updates emitted, or
     // emitting of the item is delayed until our subscriber is installed,
     // so we see it as an update.
-    val ops = TestClient.unsafe().apply[Resource]
-    val subscribe = ops.mirror { mirror =>
-      mirror.ids.take(2).compile.toList
+
+    val test = for {
+      client <- TestClient[Task]
+      ops = client[Resource]
+      subscribe = ops.mirror { mirror => takeUnique(2)(mirror.ids) }
+      events <- Task.parMap3(
+        ops.write(f1),
+        subscribe,
+        ops.write(f2),
+      )((_, lst, _) => lst)
+    } yield {
+      expect(events === List(Id.of(f1), Id.of(f2)))
     }
 
-    val f = tick(Task.parZip3(
-      subscribe,
-      ops.write(f1),
-      ops.write(f2)
-    ))
-
-    assert(f.value.map(_.map(_._1.sorted)) == Some(Success(List(Id.of(f1)))))
+    // run on test scheduler, to inject some intentional reordering of operations
+    val testScheduler = TestScheduler(ExecutionModel.AlwaysAsyncExecution)
+    TestSchedulerUtil.run(testScheduler, test)
   }
 }

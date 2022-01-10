@@ -33,24 +33,25 @@ object MutationTestCase {
 object MutatorTestLive extends TaskApp {
   override def run(args: List[String]): Task[ExitCode] = {
     Skuber.default.use { client =>
-      MutatorTest.mainFn(args.toArray, seed => {
+      MutatorTest.mainFn(args, seed => {
         MutatorTest.testLive(MutationTestCase.withSeed(seed), client)
       })
     }.as(ExitCode.Success)
   }
 }
 
-object MutatorTest extends Logging {
-  def main(args: Array[String]): Unit = {
+object MutatorTest extends TaskApp with Logging {
+  override def run(args: List[String]): Task[ExitCode] = {
     mainFn(args, seed => testSynthetic(MutationTestCase.withSeed(seed)))
-      .runSyncUnsafe()(Scheduler.global, implicitly)
+      .as(ExitCode.Success)
   }
 
   // given a runTest function, run whatever tests are implied bu commandline arguments
-  def mainFn(args: Array[String], runTest: Long => Task[Unit]): Task[Unit] = {
-    args match {
-      case Array() => runTest(System.currentTimeMillis()).restartUntil(_ => false)
-      case args => args.toList.map(_.toLong).traverse_(seed => runTest(seed))
+  def mainFn(args: Seq[String], runTest: Long => Task[Unit]): Task[Unit] = {
+    if (args.isEmpty) {
+      runTest(System.currentTimeMillis()).restartUntil(_ => false)
+    } else {
+      args.map(_.toLong).traverse_(seed => runTest(seed))
     }
   }
 

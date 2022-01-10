@@ -1,25 +1,23 @@
 package foperator.internal
 
+import cats.Eq
 import cats.effect.concurrent.{Deferred, MVar, MVar2}
 import cats.effect.{ExitCase, Fiber}
 import cats.implicits._
+import foperator.fixture.{Resource, ResourceSpec, ResourceStatus, resource}
+import foperator.internal.Dispatcher.StateMap
+import foperator.testkit.{TestClient, TestSchedulerUtil}
+import foperator._
 import fs2.Stream
 import monix.eval.Task
 import monix.execution.schedulers.TestScheduler
 import monix.execution.{ExecutionModel, Scheduler}
 import net.gfxmonk.auditspec.Audit
-import foperator.fixture.{Resource, ResourceSpec, ResourceStatus, resource}
-import foperator.internal.Dispatcher.StateMap
-import foperator.testkit.{TestClient, TestSchedulerUtil}
-import foperator.{Event, Id, ReconcileOptions, ReconcileResult, ResourceState}
-import org.scalatest.Assertion
-import org.scalatest.funspec.AsyncFunSpec
 
 import scala.concurrent.duration._
 import scala.util.Failure
 
-class DispatcherTest extends AsyncFunSpec with Logging {
-  import DispatcherTest._
+object DispatcherTest extends SimpleTimedTaskSuite with Logging {
 
   val r1 = resource("id1")
   val r2 = resource("id2")
@@ -29,36 +27,35 @@ class DispatcherTest extends AsyncFunSpec with Logging {
   val reconcileLoop = List(ReconcileStart(r1.name), ReconcileEnd(r1.name))
   val failedReconcileLoop = List(ReconcileStart(r1.name), ReconcileFailed(r1.name))
 
-  it("reconciles existing objects on startup") {
-    (for {
-      ctx <- spawn()
+  timedTest("reconciles existing objects on startup") {
+    for {
+      ctx <- spawn(doTick = false)
       // this write can occur off the test scheduler, since
-      // the client hasn't started yet
+      // we haven't ticked (i.e. the client hasn't started yet)
       _ <- ctx.client.apply[Resource].write(r1)
-      _ <- ctx.audit.reset.map(log => assert(log == List(Updated(r1.name))))
+      _ <- ctx.expectAudit(log => expect(log === List(Updated(r1.name))))
       _ <- ctx.tick()
       log <- ctx.audit.get
     } yield {
-      assert(log == reconcileLoop)
-    }).runToFuture(Scheduler.global)
+      expect(log === reconcileLoop)
+    }
   }
 
-  it("runs the reconciler for new objects") {
-    (for {
+  timedTest("runs the reconciler for new objects") {
+    for {
       ctx <- spawn()
-      _ <- ctx.tick()
       // make sure we didn't reconcile anything yet
-      _ <- ctx.audit.reset.map(log => assert(log == Nil))
+      _ <- ctx.expectAudit(log => expect(log === Nil))
       _ <- ctx.write(r1)
       _ <- ctx.tick()
       log <- ctx.audit.get
     } yield {
-      assert(log == List(Updated(r1.name)) ++ reconcileLoop)
-    }).runToFuture(Scheduler.global)
+      expect(log === List(Updated(r1.name)) ++ reconcileLoop)
+    }
   }
 
-  it("immediately reconciles upon update") {
-    (for {
+  timedTest("immediately reconciles upon update") {
+    for {
       ctx <- spawn(opts = ReconcileOptions(refreshInterval = Some(10.minutes)))
       _ <- ctx.write(r1)
       _ <- ctx.tick(1.second)
@@ -66,7 +63,7 @@ class DispatcherTest extends AsyncFunSpec with Logging {
       _ <- ctx.tick(1.second)
       log <- ctx.audit.get
     } yield {
-      assert(log == List(
+      expect(log === List(
         Updated(r1.name),
         ReconcileStart(r1.name),
         ReconcileEnd(r1.name),
@@ -75,34 +72,34 @@ class DispatcherTest extends AsyncFunSpec with Logging {
         ReconcileStart(r1.name),
         ReconcileEnd(r1.name),
       ))
-    }).runToFuture(Scheduler.global)
+    }
   }
 
-  it("schedules a periodic update") {
-    (for {
+  timedTest("schedules a periodic update") {
+    for {
       ctx <- spawn(opts = ReconcileOptions(refreshInterval = Some(10.minutes)))
       _ <- ctx.write(r1)
 
       // immediate reconcile
       _ <- ctx.tick()
-      _ <- ctx.audit.reset.map(l => assert(l == List(Updated(r1.name)) ++ reconcileLoop))
+      _ <- ctx.expectAudit(l => expect(l === List(Updated(r1.name)) ++ reconcileLoop))
 
       // nothing for next 9 minutes
       _ <- ctx.tick(9.minutes)
-      _ <- ctx.audit.reset.map(l => assert(l == Nil))
+      _ <- ctx.expectAudit(l => expect(l === Nil))
 
       // reconcile again at 10 minutes
       _ <- ctx.tick(2.minutes)
-      _ <- ctx.audit.reset.map(l => assert(l == reconcileLoop))
+      _ <- ctx.expectAudit(l => expect(l === reconcileLoop))
 
       // ...and again
       _ <- ctx.tick(10.minutes)
-      _ <- ctx.audit.reset.map(l => assert(l == reconcileLoop))
-    } yield new Assertion {}).runToFuture(Scheduler.global)
+      _ <- ctx.expectAudit(l => expect(l === reconcileLoop))
+    } yield success
   }
 
-  it("reschedules (with backoff) on error") {
-    (for {
+  timedTest("reschedules (with backoff) on error") {
+    for {
       ctx <- spawn(
         opts = ReconcileOptions(refreshInterval = None, errorDelay = { n => (n * n).seconds }),
         reconcile = _ => Task.raiseError(new RuntimeException("reconcile failed!"))
@@ -111,28 +108,28 @@ class DispatcherTest extends AsyncFunSpec with Logging {
 
       // immediate reconcile
       _ <- ctx.tick()
-      _ <- ctx.audit.reset.map(l => assert(l == List(Updated(r1.name)) ++ failedReconcileLoop))
+      _ <- ctx.expectAudit(l => expect(l === List(Updated(r1.name)) ++ failedReconcileLoop))
 
       // retry in 1s
       _ <- ctx.tick(1.second)
-      _ <- ctx.audit.reset.map(l => assert(l == failedReconcileLoop))
+      _ <- ctx.expectAudit(l => expect(l === failedReconcileLoop))
 
       // second failure, in 4s
       _ <- ctx.tick(4.second)
-      _ <- ctx.audit.reset.map(l => assert(l == failedReconcileLoop))
+      _ <- ctx.expectAudit(l => expect(l === failedReconcileLoop))
 
       // 3rd in 9
       _ <- ctx.tick(9.second)
-      _ <- ctx.audit.reset.map(l => assert(l == failedReconcileLoop))
+      _ <- ctx.expectAudit(l => expect(l === failedReconcileLoop))
 
       // 3rd in 16
       _ <- ctx.tick(16.second)
-      _ <- ctx.audit.reset.map(l => assert(l == failedReconcileLoop))
-    } yield new Assertion {}).runToFuture(Scheduler.global)
+      _ <- ctx.expectAudit(l => expect(l === failedReconcileLoop))
+    } yield success
   }
 
-  it("reschedules based on explicit retry indication") {
-    (for {
+  timedTest("reschedules based on explicit retry indication") {
+    for {
       ctx <- spawn(
         opts = ReconcileOptions(refreshInterval = None),
         reconcile = _ => Task.pure(ReconcileResult.RetryAfter(1.second))
@@ -141,16 +138,16 @@ class DispatcherTest extends AsyncFunSpec with Logging {
 
       // immediate reconcile
       _ <- ctx.tick()
-      _ <- ctx.audit.reset.map(l => assert(l == List(Updated(r1.name)) ++ reconcileLoop))
+      _ <- ctx.expectAudit(l => expect(l === List(Updated(r1.name)) ++ reconcileLoop))
 
       // retry in 1s
       _ <- ctx.tick(1.second)
-      _ <- ctx.audit.reset.map(l => assert(l == reconcileLoop))
-    } yield new Assertion {}).runToFuture(Scheduler.global)
+      _ <- ctx.expectAudit(l => expect(l === reconcileLoop))
+    } yield success
   }
 
-  it("schedules a follow-on reconcile if an update arrives during a reconcile") {
-    (for {
+  timedTest("schedules a follow-on reconcile if an update arrives during a reconcile") {
+    for {
       ctx <- spawn(
         reconcile = _ => Task.sleep(10.seconds).as(ReconcileResult.Ok)
       )
@@ -158,39 +155,40 @@ class DispatcherTest extends AsyncFunSpec with Logging {
 
       // immediate reconcile
       _ <- ctx.tick()
-      _ <- ctx.audit.reset.map(l => assert(l == List(Updated(r1.name), ReconcileStart(r1.name))))
+      _ <- ctx.expectAudit(l => expect(l === List(Updated(r1.name), ReconcileStart(r1.name))))
 
       // update occurs after 5s
       _ <- ctx.writeAfter(5.seconds, r1.copy(spec = ResourceSpec("updated")))
       _ <- ctx.tick(5.seconds)
-      _ <- ctx.audit.reset.map(l => assert(l == List(Updated(r1.name))))
+      _ <- ctx.expectAudit(l => expect(l === List(Updated(r1.name))))
 
       // after another 5s, the first reconcile is done and we immediately start a new one
       _ <- ctx.tick(5.seconds)
-      _ <- ctx.audit.reset.map(l => assert(l == List(ReconcileEnd(r1.name), ReconcileStart(r1.name))))
-    } yield new Assertion {}).runToFuture(Scheduler.global)
+      _ <- ctx.expectAudit(l => expect(l === List(ReconcileEnd(r1.name), ReconcileStart(r1.name))))
+    } yield success
   }
 
-  it("skips intermediate updates while busy") {
+  timedTest("skips intermediate updates while busy") {
     // takes 10s to reconcile, updates at 0, 2, 4, 6, 8s. two reconciles of states 0, n
     var logResource: Resource => Task[Unit] = _ => Task.unit
-    (for {
-      ctx <- spawn(reconcile = { res =>
+    for {
+      ctx <- spawn(doTick = false, reconcile = { res =>
         logResource(res) >> Task.sleep(10.seconds).as(ReconcileResult.Ok)
       })
       _ <- Task { logResource = (r: Resource) => ctx.audit.record(Spec(r.spec)) }
+      _ <- ctx.tick()
       _ <- ctx.write(r1)
 
       // immediate reconcile
       _ <- ctx.tick()
-      _ <- ctx.audit.reset.map(l => assert(l == List(Updated(r1.name), ReconcileStart(r1.name), Spec(r1.spec))))
+      _ <- ctx.expectAudit(l => expect(l === List(Updated(r1.name), ReconcileStart(r1.name), Spec(r1.spec))))
 
       // updates occur at 2, 4, 6 seconds
       _ <- ctx.writeAfter(2.seconds, r1.copy(spec = ResourceSpec("update1")))
       _ <- ctx.writeAfter(4.seconds, r1.copy(spec = ResourceSpec("update2")))
       _ <- ctx.writeAfter(6.seconds, r1.copy(spec = ResourceSpec("update3")))
       _ <- ctx.tick(10.seconds)
-      _ <- ctx.audit.reset.map(l => assert(l == List(
+      _ <- ctx.expectAudit(l => expect(l === List(
         Updated(r1.name),
         Updated(r1.name),
         Updated(r1.name),
@@ -198,15 +196,15 @@ class DispatcherTest extends AsyncFunSpec with Logging {
         ReconcileStart(r1.name),
         Spec(ResourceSpec("update3"))
       )))
-    } yield new Assertion {}).runToFuture(Scheduler.global)
+    } yield success
   }
 
-  it("limits the number of active reconciles") {
+  timedTest("limits the number of active reconciles") {
     // 10s to reconcile, 2 limit, update 4 and check sequencing
     def countTypes(log: List[Interaction]) =
       log.groupBy(_.getClass).view.mapValues(_.size).toMap
 
-    (for {
+    for {
       ctx <- spawn(
         reconcile = { _ => Task.sleep(10.seconds).as(ReconcileResult.Ok) },
         opts = ReconcileOptions(concurrency = 2)
@@ -215,16 +213,16 @@ class DispatcherTest extends AsyncFunSpec with Logging {
 
       // immediate reconcile picks up two
       _ <- ctx.tick()
-      _ <- ctx.audit.reset.map { l =>
-        assert(countTypes(l) == Map(
+      _ <- ctx.expectAudit { l =>
+        expect(countTypes(l) === Map(
           classOf[Updated] -> 4,
           classOf[ReconcileStart] -> 2,
         ))
       }
 
       _ <- ctx.tick(10.seconds)
-      _ <- ctx.audit.reset.map { l =>
-        assert(countTypes(l) == Map(
+      _ <- ctx.expectAudit { l =>
+        expect(countTypes(l) === Map(
           classOf[ReconcileEnd] -> 2,
           classOf[ReconcileStart] -> 2,
         ))
@@ -232,15 +230,15 @@ class DispatcherTest extends AsyncFunSpec with Logging {
 
       // no further reconciles started
       _ <- ctx.tick(10.seconds)
-      _ <- ctx.audit.reset.map { l =>
-        assert(countTypes(l) == Map(
+      _ <- ctx.expectAudit { l =>
+        expect(countTypes(l) === Map(
           classOf[ReconcileEnd] -> 2,
         ))
       }
-    } yield new Assertion {}).runToFuture(Scheduler.global)
+    } yield success
   }
 
-  it("aborts the primary task when any reconcile loop fails") {
+  timedTest("aborts the primary task when any reconcile loop fails") {
     val input = Stream.repeatEval(Task.unit)
     val error = new RuntimeException("internal error in reconcile loop")
     val loop = new ReconcileLoop[Task, Unit] {
@@ -248,17 +246,17 @@ class DispatcherTest extends AsyncFunSpec with Logging {
       override def run(k: Unit): Task[Unit] = Task.raiseError(error)
     }
 
-    (for {
+    for {
       state <- MVar[Task].of(Map.empty: StateMap[Task, Unit])
       errorDeferred <- Deferred[Task, Throwable]
       result <- Dispatcher.main(state, errorDeferred, loop, input).materialize
     } yield {
-      assert(result == Failure(error))
-    }).runToFuture(Scheduler.global)
+      expect(result == Failure(error))
+    }
   }
 
-  it("removes the running loop if the resource is deleted") {
-    (for {
+  timedTest("removes the running loop if the resource is deleted") {
+    for {
       state <- MVar[Task].of(Map.empty: StateMap[Task, Id[Resource]])
       ctx <- spawn(
         reconcile = _ => Task.sleep(1.second).as(ReconcileResult.Ok),
@@ -266,22 +264,23 @@ class DispatcherTest extends AsyncFunSpec with Logging {
       )
       _ <- ctx.write(r1)
       _ <- ctx.tick()
-      _ <- ctx.audit.reset.map { l =>
-        assert(l == List(Updated(r1.name), ReconcileStart(r1.name)))
+      _ <- ctx.expectAudit { l =>
+        expect(l === List(Updated(r1.name), ReconcileStart(r1.name)))
       }
-      _ <- state.read.map(s => assert(s.size == 1))
+      _ <- state.read.flatMap(s => expect(s.size === 1).failFast)
 
       _ <- ctx.delete(r1.id)
       _ <- ctx.tick(1.second)
-      _ <- ctx.audit.reset.map { l =>
-        assert(l == List(Deleted(r1.name), ReconcileEnd(r1.name)))
+      _ <- ctx.expectAudit { l =>
+        expect(l === List(Deleted(r1.name), ReconcileEnd(r1.name)))
       }
-      _ <- state.read.map(s => assert(s.size == 0))
-    } yield new Assertion {}).runToFuture(Scheduler.global)
+      _ <- state.read.flatMap(s => expect(s.size === 0).failFast)
+    } yield success
   }
-}
 
-object DispatcherTest extends Logging {
+
+  // test helpers
+
   sealed trait Interaction
   case class ReconcileStart(name: String) extends Interaction
   case class Updated(name: String) extends Interaction
@@ -291,6 +290,7 @@ object DispatcherTest extends Logging {
   case class ReconcileFailed(name: String) extends Interaction
   case class Spec(value: ResourceSpec) extends Interaction
 
+  implicit val eq: Eq[Interaction] = Eq.fromUniversalEquals[Interaction]
   implicit val ord: Ordering[Interaction] = new Ordering[Interaction] {
     val s = implicitly[Ordering[String]]
     override def compare(a: Interaction, b: Interaction): Int = (a, b) match {
@@ -329,6 +329,10 @@ object DispatcherTest extends Logging {
       _ <- Task(logger.debug("< tick ({})", testScheduler.state.tasks.size))
     } yield ()
 
+    def expectAudit(fn: List[Interaction] => weaver.Expectations): Task[Unit] = {
+      audit.reset.map(fn).flatMap(_.failFast)
+    }
+
     private def spawn[T](task: Task[T]): Task[Unit] = Task {
       task.executeOn(testScheduler).onErrorHandle { err =>
         logger.error("Spawned task failed", err)
@@ -344,7 +348,8 @@ object DispatcherTest extends Logging {
     reconcile: Resource => Task[ReconcileResult] = defaultReconcile,
     opts: ReconcileOptions = ReconcileOptions(),
     state: Option[MVar2[Task, Dispatcher.StateMap[Task, Id[Resource]]]] = None,
-  ) = {
+    doTick: Boolean = true,
+  ): Task[Ctx] = {
     def wrapReconciler(audit: Audit[Interaction], fn: Resource => Task[ReconcileResult])(_client: TestClient[Task], res: ResourceState[Resource]) = res match {
       case ResourceState.Active(v) => {
         audit.record(ReconcileStart(v.name)) >> fn(v).guaranteeCase {
@@ -368,6 +373,8 @@ object DispatcherTest extends Logging {
           .resource(client, mirror, wrapReconciler(audit, reconcile), opts, stateOverride = state)
           .use(identity)
       }.executeOn(testScheduler).start
-    } yield new Ctx(testScheduler, client, audit, fiber)
+      ctx = new Ctx(testScheduler, client, audit, fiber)
+      _ <- if (doTick) ctx.tick() else Task.unit
+    } yield ctx
   }
 }

@@ -56,5 +56,10 @@ object ResourceState {
     case SoftDeleted(_) => io.pure(dfl)
     case Active(t) => fn(t)
   }
+
+  def map[T, R](t: ResourceState[T], fn: T => R): ResourceState[R] = t match {
+    case SoftDeleted(x) => SoftDeleted(fn(x))
+    case Active(x) => Active(fn(x))
+  }
 }
 

@@ -1,5 +1,6 @@
 package foperator.testkit
 
+import cats.effect.Fiber
 import monix.eval.Task
 import monix.execution.schedulers.TestScheduler
 
@@ -37,9 +38,13 @@ object TestSchedulerUtil {
       case Right(_) => Task.raiseError(new RuntimeException("tick() branch completed; this is impossible"))
     }
 
-  def run[T](testScheduler: TestScheduler, t: Task[T]): Task[T] = {
+  def start[T](testScheduler: TestScheduler, t: Task[T]): Task[Fiber[Task, T]] = {
+    t.executeOn(testScheduler).start
+  }
+
+  def run[T](testScheduler: TestScheduler, t: Task[T], time: FiniteDuration = Duration.Zero): Task[T] = {
     t.executeOn(testScheduler).start.flatMap { fiber =>
-      await(testScheduler, fiber.join)
+      await(testScheduler, fiber.join, time)
     }
   }
 

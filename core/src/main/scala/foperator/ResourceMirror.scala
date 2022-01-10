@@ -4,9 +4,9 @@ import cats.Monad
 import cats.effect.Concurrent
 import cats.effect.concurrent.{MVar, MVar2}
 import cats.implicits._
-import foperator.internal.{Broadcast, IOUtil, Logging}
+import foperator.internal.{IOUtil, Logging}
 import foperator.types._
-import fs2.{Chunk, Stream}
+import fs2.{BroadcastTopic, Chunk, Stream}
 
 /**
  * ResourceMirror provides:
@@ -29,6 +29,7 @@ object ResourceMirror extends Logging {
   type ResourceMap[T] = Map[Id[T], ResourceState[T]]
 
   private class Impl[IO[_], T](
+    // TODO could this just be a Ref?
     state: MVar2[IO, ResourceMap[T]],
     idStream: Stream[IO, Id[T]],
   )(implicit io: Monad[IO]) extends ResourceMirror[IO, T] {
@@ -44,6 +45,7 @@ object ResourceMirror extends Logging {
   private [foperator] def apply[IO[_], C, T, R](client: C, opts: ListOptions)(block: ResourceMirror[IO, T] => IO[R])
     (implicit io: Concurrent[IO], res: ObjectResource[T], e: Engine[IO, C, T]): IO[R] = {
     for {
+      _ <- io.delay(logger.info("[{}]: Starting ResourceMirror", res.kind))
       listAndWatch <- e.listAndWatch(client, opts).adaptError(new RuntimeException(s"Error listing / watching ${res.kind}", _))
       (initial, rawUpdates) = listAndWatch
       _ <- io.delay(logger.info("[{}]: List returned {} initial resources", res.kind, initial.size))
@@ -52,7 +54,7 @@ object ResourceMirror extends Logging {
       )
       state <- MVar[IO].of(initial.map(obj => res.id(obj) -> ResourceState.of(obj)).toMap)
       trackedUpdates = trackState(state, updates).map(e => res.id(e.raw))
-      topic <- Broadcast[IO, Id[T]]
+      topic <- BroadcastTopic[IO, Id[T]]
       consume = trackedUpdates.through(topic.publish).compile.drain
       ids = injectInitial(state.read.map(_.keys.toList), topic)
       impl = new Impl(state, ids)
@@ -60,10 +62,13 @@ object ResourceMirror extends Logging {
     } yield result
   }
 
-  private def injectInitial[IO[_], T](initial: IO[List[T]], topic: Broadcast[IO, T])(implicit io: Concurrent[IO]): Stream[IO, T] = {
+  private def injectInitial[IO[_], T](initial: IO[List[T]], topic: BroadcastTopic[IO, T])(implicit io: Concurrent[IO]): Stream[IO, T] = {
     Stream.resource(topic.subscribeAwait(1)).flatMap { updates =>
       // first emit initial IDs, then follow with updates
-      Stream.evalUnChunk(io.map(initial)(Chunk.seq)).append(updates)
+      Stream.evalUnChunk(io.map(initial) { items =>
+        logger.debug("updates: injecting initial chunk of {} items", items.length)
+        Chunk.seq(items)
+      }).append(updates)
     }
   }
 
@@ -79,7 +84,7 @@ object ResourceMirror extends Logging {
     input.evalTap[IO, Unit] { event =>
       val id = res.id(event.raw)
       val desc = s"${Event.desc(event)}($id, v${res.version(event.raw).getOrElse("")})"
-      io.delay(logger.debug("[{}] State applied {}", res.kind, desc))
+      io.delay(logger.debug("[{}] Updating state for: {}", res.kind, desc))
     }.evalTap {
       case Event.Deleted(t) => transform(s => s.removed(res.id(t)))
       case Event.Updated(t) => transform(s => s.updated(res.id(t), ResourceState.of(t)))

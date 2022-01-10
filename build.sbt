@@ -5,7 +5,21 @@ val monixVersion = "3.2.2"
 val monixEval = "io.monix" %% "monix-eval" % monixVersion
 val monixReactive = "io.monix" %% "monix-reactive" % monixVersion
 val logback = "ch.qos.logback" % "logback-classic" % "1.2.3"
+
+// TODO: remove
 val scalatest = "org.scalatest" %% "scalatest" % "3.1.0" % "test"
+
+val weaverVersion = "0.6.9"
+val weaverSettings = Seq(
+  libraryDependencies ++= Seq(
+    "com.disneystreaming" %% "weaver-cats" % weaverVersion % Test,
+    "com.disneystreaming" %% "weaver-monix" % weaverVersion % Test,
+  ),
+  testFrameworks ++= Seq(
+    new TestFramework("weaver.framework.CatsEffect"),
+    new TestFramework("weaver.framework.Monix"),
+  )
+)
 
 val common = Seq(
   version := "1.0",
@@ -48,10 +62,11 @@ lazy val tests = (project in file("tests"))
     libraryDependencies ++= Seq(
       monixEval,
       logback,
-      scalatest,
       "net.gfxmonk" %% "auditspec" % "0.1.0" % "test",
     )
-  ).dependsOn(core, testkit)
+  )
+  .settings(weaverSettings)
+  .dependsOn(core, testkit)
 
 // skuber backend
 lazy val skuber = (project in file("backends/skuber"))
@@ -81,6 +96,7 @@ lazy val kclient = (project in file("backends/kubernetes-client"))
 lazy val sample = (project in file("sample"))
   .settings(common)
   .settings(hiddenProjectSettings)
+  .settings(weaverSettings)
   .settings(
     name := "foperator-sample",
     libraryDependencies ++= Seq(logback, scalatest),

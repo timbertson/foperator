@@ -12,7 +12,7 @@ case class TestResource[Spec, Status](
   name: String,
   spec: Spec,
   status: Option[Status]=None,
-  meta: TestMeta=TestMeta.empty)
+  meta: TestMeta=TestMeta.initial)
 {
   def id
     (implicit res: ObjectResource[TestResource[Spec, Status]])
@@ -54,6 +54,6 @@ case class TestMeta(
   deletionTimestamp: Option[Instant]=None)
 
 object TestMeta {
-  def empty = TestMeta()
+  def initial = TestMeta()
   implicit val eq: Eq[TestMeta] = Eq.fromUniversalEquals
 }

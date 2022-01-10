@@ -32,6 +32,7 @@ private[foperator] object Dispatcher extends Logging {
   )(implicit io: Concurrent[IO]): IO[Unit] = {
     val process: IO[Unit] = {
       input.evalMap[IO, Unit] { id =>
+        logger.debug(s"changed: $id")
         state.modify_ { stateMap =>
           (stateMap.get(id) match {
             // if running, mark dirty. otherwise, spawn a reconcile loop

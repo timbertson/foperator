@@ -5,8 +5,9 @@ import cats.effect.concurrent.{MVar, MVar2}
 import cats.effect.{Clock, Concurrent}
 import cats.implicits._
 import foperator._
-import foperator.internal.{Broadcast, Logging}
+import foperator.internal.Logging
 import foperator.types._
+import fs2.BroadcastTopic
 import monix.eval.Task
 import monix.execution.Scheduler
 import monix.execution.schedulers.CanBlock
@@ -16,7 +17,7 @@ import java.util.concurrent.TimeUnit
 
 class TestClient[IO[_]](
   state: MVar2[IO, TestClient.State],
-  val topic: Broadcast[IO, Event[TestClient.Entry]],
+  val topic: BroadcastTopic[IO, Event[TestClient.Entry]],
   val auditors: List[Event[TestClient.Entry] => IO[Unit]],
 )(implicit io: Concurrent[IO]) extends Client[IO, TestClient[IO]] with Logging {
 
@@ -60,7 +61,7 @@ object TestClient extends Client.Companion[Task, TestClient[Task]] {
   def apply[IO[_]](implicit io: Concurrent[IO]): IO[TestClient[IO]] = {
     for {
       state <- MVar.of(Map.empty: State)
-      topic <- Broadcast[IO, Event[(ResourceKey, Any)]]
+      topic <- BroadcastTopic[IO, Event[(ResourceKey, Any)]]
     } yield new TestClient[IO](state, topic, Nil)
   }
 
@@ -161,8 +162,6 @@ class TestClientEngineImpl[IO[_], T]
 
       update.flatMap {
         case (newState, event) => {
-          // in the case of deletion, we just pretend what you wrote is still there
-          // (this is what k8s does, since GC is asynchronous)
           event.traverse(c.publish).as(newState)
         }
       }
