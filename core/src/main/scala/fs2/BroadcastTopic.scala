@@ -2,8 +2,8 @@ package fs2
 
 import cats.effect.{Concurrent, Resource, Sync}
 import cats.implicits._
-import fs2.concurrent.{PubSub, Topic}
-import fs2.concurrent.Topic.{Strategy, in}
+import fs2.concurrent.PubSub
+import fs2.concurrent.Topic.Strategy
 import fs2.internal.{SizedQueue, Token}
 
 

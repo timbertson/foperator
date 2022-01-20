@@ -1,23 +1,22 @@
 package foperator.sample
 
-import monix.execution.Scheduler
+import cats.implicits._
 import foperator.internal.Logging
 import foperator.sample.mutator.{MutationTestCase, MutatorTest}
-import org.scalatest.funspec.AnyFunSpec
+import monix.eval.Task
+import weaver.monixcompat.SimpleTaskSuite
 
-class AdvancedTest extends AnyFunSpec with Logging {
-  def run(seed: Long) =
-    MutatorTest.testSynthetic(MutationTestCase.withSeed(seed)).runSyncUnsafe()(Scheduler.global, implicitly)
+object AdvancedTest extends SimpleTaskSuite with Logging {
+  def run(seed: Long): Task[Unit] = MutatorTest.testSynthetic(MutationTestCase.withSeed(seed))
 
-  it("Reaches a consistent state after every mutation") {
+  test("Reaches a consistent state after every mutation") {
     val initalSeed = System.currentTimeMillis().toInt.toLong // toInt truncates to prevent overflow
-    Range.Long(initalSeed, initalSeed + 100, 1).foreach { seed =>
-      run(seed)
-      println(s"done: ${seed}")
-    }
+    fs2.Stream.fromIterator(Range.Long(initalSeed, initalSeed + 100, 1).iterator).evalMap { seed =>
+      run(seed) >> Task(println(s"done: ${seed}"))
+    }.compile.drain.as(success)
   }
 
-//  it("specific seed") { // used for debugging a specific failure
+//  test("specific seed") { // used for debugging a specific failure
 //    run(765000891L)
 //  }
 }

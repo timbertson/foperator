@@ -6,9 +6,6 @@ val monixEval = "io.monix" %% "monix-eval" % monixVersion
 val monixReactive = "io.monix" %% "monix-reactive" % monixVersion
 val logback = "ch.qos.logback" % "logback-classic" % "1.2.3"
 
-// TODO: remove
-val scalatest = "org.scalatest" %% "scalatest" % "3.1.0" % "test"
-
 val weaverVersion = "0.6.9"
 val weaverSettings = Seq(
   libraryDependencies ++= Seq(
@@ -99,7 +96,7 @@ lazy val sample = (project in file("sample"))
   .settings(weaverSettings)
   .settings(
     name := "foperator-sample",
-    libraryDependencies ++= Seq(logback, scalatest),
+    libraryDependencies ++= Seq(logback),
     packMain := Map(
       // sample operators
       "simple" -> "foperator.sample.SimpleOperator",
