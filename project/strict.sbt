@@ -3,3 +3,4 @@
 
 addSbtPlugin("io.github.davidgregory084" % "sbt-tpolecat" % "0.1.20")
 addSbtPlugin("net.gfxmonk" % "sbt-strict-scope" % "3.0.0")
+
