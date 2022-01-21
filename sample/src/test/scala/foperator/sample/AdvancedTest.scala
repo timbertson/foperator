@@ -1,6 +1,5 @@
 package foperator.sample
 
-import cats.implicits._
 import foperator.internal.Logging
 import foperator.sample.mutator.{MutationTestCase, MutatorTest}
 import monix.eval.Task

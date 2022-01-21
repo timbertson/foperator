@@ -1,7 +1,6 @@
 package foperator.sample.generic
 
 import cats.effect.ExitCode
-import cats.implicits._
 import com.goyeau.kubernetes.client.crd.CustomResource
 import foperator.backend.KubernetesClient
 import foperator.backend.kubernetesclient.implicits._

@@ -1,7 +1,7 @@
 import ScalaProject._
 
 val fs2Version = "2.5.10"
-val monixVersion = "3.2.2"
+val monixVersion = "3.4.0"
 val monixEval = "io.monix" %% "monix-eval" % monixVersion
 val monixReactive = "io.monix" %% "monix-reactive" % monixVersion
 val logback = "ch.qos.logback" % "logback-classic" % "1.2.3"

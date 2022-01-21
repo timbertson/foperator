@@ -174,7 +174,7 @@ object MutatorTest extends TaskApp with Logging {
       def tickLoop(remaining: Int): Task[Unit] = {
         Task.sleep(10.millis) >>
         Task.defer {
-          if (lastUpdateCount.get == updateCount.get) {
+          if (lastUpdateCount.get() == updateCount.get()) {
             // no updates seen yet, short-circuit without decrementing `remaining`
             tickLoop(remaining)
           } else {
@@ -184,7 +184,7 @@ object MutatorTest extends TaskApp with Logging {
               validator.validate match {
                 case Validated.Valid(_) =>
                   // update lastUpdateCount for next loop
-                  Task { lastUpdateCount.set(updateCount.get) }
+                  Task { lastUpdateCount.set(updateCount.get()) }
                 case Validated.Invalid(_) => {
                   if (remaining > 0) {
                     // not consistent yet, keep trying

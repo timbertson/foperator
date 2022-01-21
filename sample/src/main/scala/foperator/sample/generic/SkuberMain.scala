@@ -1,7 +1,6 @@
 package foperator.sample.generic
 
 import cats.effect.ExitCode
-import cats.implicits._
 import foperator.backend.Skuber
 import foperator.backend.skuber.implicits._
 import monix.eval.{Task, TaskApp}

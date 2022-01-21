@@ -340,7 +340,7 @@ object DispatcherTest extends SimpleTimedTaskSuite with Logging {
     }
   }
 
-  def defaultReconcile(_res: Resource): Task[ReconcileResult] = {
+  def defaultReconcile(@annotation.unused _res: Resource): Task[ReconcileResult] = {
     Task.pure(ReconcileResult.Ok)
   }
 
@@ -350,7 +350,7 @@ object DispatcherTest extends SimpleTimedTaskSuite with Logging {
     state: Option[MVar2[Task, Dispatcher.StateMap[Task, Id[Resource]]]] = None,
     doTick: Boolean = true,
   ): Task[Ctx] = {
-    def wrapReconciler(audit: Audit[Interaction], fn: Resource => Task[ReconcileResult])(_client: TestClient[Task], res: ResourceState[Resource]) = res match {
+    def wrapReconciler(audit: Audit[Interaction], fn: Resource => Task[ReconcileResult])(@annotation.unused _client: TestClient[Task], res: ResourceState[Resource]) = res match {
       case ResourceState.Active(v) => {
         audit.record(ReconcileStart(v.name)) >> fn(v).guaranteeCase {
           case ExitCase.Canceled => audit.record(ReconcileCanceled(v.name))
