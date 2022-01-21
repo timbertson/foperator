@@ -137,9 +137,9 @@ val e = TestClient.implicitEngine[Task, CustomResourceDefinition]
 
 In this case you get a new error, "No implicits found for eq: Eq[CustomResourceDefinition]"
 
-In this case an `Eq` instance was missing, preventing the implicit Engine from being built. In an earlier version of foperator) the skuber backend provided an `Eq` for `CustomResource`, but not `CustomResourceDefinition`.
+In this case an `Eq` instance was missing, preventing the implicit Engine from being built. In an earlier version (of foperator) the skuber backend provided an `Eq` for `CustomResource`, but not `CustomResourceDefinition`.
 
-In general if you're operating on builtin kubernetes types, you may need to provide some of your own instances (like `Eq` and `ObjectEditor`), because Skuber's type heirarchy doesn't allow for blanket implementations.
+In general if you're operating on builtin kubernetes types, you may need to provide some of your own instances (like `Eq` and `ObjectEditor`), whenever there's not a blanket implementation available in `foperator`.
 
 # Managing multiple resources
 
