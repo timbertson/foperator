@@ -52,7 +52,7 @@ jobs:
         path: "~/.cache/dhall"
     - name: Check generated files
       run: "set -eu -o pipefail\nset -x\ndocker run --rm -i \"--volume\" \"$HOME/.cache:/root/.cache\"
-        \"--volume\" \"$PWD:/cwd\" \"--workdir=/cwd\" \"docker.pkg.github.com/timbertson/dhall-ci/dhall:1.37\"
+        \"--volume\" \"$PWD:/cwd\" \"--workdir=/cwd\" \"docker.pkg.github.com/timbertson/dhall-ci/dhall:1.40\"
         bash -eu -o pipefail <<EOF_runInDocker\n  ./dhall/render\n  ./dhall/fix --lint
         dhall\n  if ! git --no-pager diff --patch --exit-code HEAD -- >&2; then\n
         \   set +x\n    echo >&2\n    echo '--------------------------------' >&2\n

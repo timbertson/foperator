@@ -3,95 +3,108 @@
 # You should NOT edit it manually, your changes will be lost.
 
 set -eu
-# with-local will temporarily install all `.dhall.local` files in place of the
-# corresponding `.dhall` files, for the duration of a single command.
+set -o pipefail
+
+# This script enables local imports using the following pattern:
 #
-# Upon exit, the script will attempt to restore the original versions.
-# If this fails, the following invariants will hold, which should allow the
-# script to be run again and self-correct:
+# $ cat local.dhall
+# toMap { DHALL_FOO = "./foo-local.dhall" }
 #
-# Invariants:
-#  - there is always a .local version
-#  - if there is no explicit .remote file, then there must be a plain file (which is the logical "remote" version)
-#  - if there is a .remote file, then
-#    - there may be a plain file, which is a symlink to .local
+# $ cat files.dhall
+# let Foo = env:DHALL_FOO ? https://(...)
+#
+# See the dhall-render readme for full details:
+# https://github.com/timbertson/dhall-render#readme
 
-if [ "${DEBUG:-0}" = 1 ]; then
-	# set -x
-	function log {
-		echo >&2 "$@"
-	}
-else
-	function log {
-		true
-	}
-fi
-
-function local_version {
-	echo "$1.local"
-}
-
-function remote_version {
-	echo "$1.remote"
-}
-
-function install_local {
-	path="$1"
-	remote_path="$(remote_version "$1")"
-	local_path="$(local_version "$1")"
-	if [ ! -e "$remote_path" ]; then
-		if [ -L "$path" ]; then
-			log "Error: $remote_path doesn't exist but $path is a symlink"
-			exit 1
-		fi
-		# backup to remote_path
-		log "moving to $remote_path"
-		mv "$path" "$remote_path"
-	fi
-	echo >&2 "[ using $local_path ... ]"
-	ln -s "$(basename "$local_path")" "$path"
-}
-
-function restore_remote {
-	# put remote version back in place
-	path="$1"
-	remote_path="$(remote_version "$1")"
-	if [ -e "$remote_path" ]; then
-		log "restoring $remote_path"
-		mv "$remote_path" "$path"
+function dhall_expr_of_file {
+	if [[ $1 == /* || $1 == *://* ]]; then
+		# absolute or URL
+		echo "$1"
 	else
-		log "Error: $remote_path is not present"
-		exit 1
+		# relative
+		echo "./$1"
 	fi
 }
 
-function find_all {
-	base_dir="$(dirname "$0")"
-	base_dir="${DHALL_LOCAL_ROOT:-$base_dir}"
-	log "base_dir: $base_dir"
-	find "$base_dir" -name '*.dhall.local' | while read f; do
-		path="$(dirname "$f")/$(basename "$f" .local)"
-		log "processing $path"
-		echo "$path"
-	done
+function bake_relative_path {
+	if [[ $1 == ./* ]]; then
+		echo "$(dirname "$1")/$2"
+	else
+		echo "$2"
+	fi
 }
 
-function restore_all {
-	find_all | while read f; do
-		restore_remote "$f"
-	done
+
+SCOPES=()
+ENV_FILES=()
+here="$(cd "$(dirname "$0")" && pwd)"
+DEFAULT_ENV_FILE="$here/local.dhall"
+
+function env_file_lines {
+	echo >&2 "[ loading env file: $1 ]"
+	ENV_MAP="$(env DHALL_LOCAL_ROOT="$here" dhall --plain --file "$1")"
+	# now format this Map Text Text into something trivial for bash to parse
+	# (we could use dhall-bash, but that's another dependency)
+	# The Text/replace works around a bug where dhall thinks absolute paths start with /"/"/
+	echo '
+		let Location = < Environment : Text | Local : Text | Missing | Remote : Text >
+		let Entry = { mapKey: Text, mapValue: Location }
+		let formatEnv = \(kvs: List Entry) ->
+			List/fold
+				Entry
+				kvs
+				Text
+				(\(elem: Entry) -> \(acc: Text) ->
+					let locationText = merge {
+						, Environment = \(name: Text) -> "env:${name}"
+						, Local = \(path: Text) -> Text/replace "/\"/\"/" "/" path
+						, Remote = \(url: Text) -> url
+						, Missing = "missing"
+					} elem.mapValue
+					in
+					acc ++ elem.mapKey ++ "=" ++ locationText ++ "\n"
+			) ""
+
+		in formatEnv '"( $ENV_MAP )" | dhall text
 }
 
-function install_all {
-	find_all | while read f; do
-		install_local "$f"
-	done
-}
+while [ "$#" -gt 0 ]; do
+	if [ "x$1" = "x-s" ]; then
+		IFS=',' read -r -a SCOPES <<< "$(echo "$2" | tr '[:lower:]' '[:upper:]')"
+		shift 2
+	elif [ "x$1" = "x-e" ]; then
+		ENV_FILES+=("$2")
+		shift 2
+	else
+		break
+	fi
+done
 
-if [ "$#" -eq 0 ]; then
-	echo >&2 "Usage: "$0" COMMAND"
+if [ "${#ENV_FILES[@]}" -eq 0 -a -e "$DEFAULT_ENV_FILE" ]; then
+	ENV_FILES+=("$DEFAULT_ENV_FILE")
 fi
 
-trap restore_all EXIT
-install_all
-"$@"
+ENVS=("DHALL_LOCAL=True")
+for scope in ${SCOPES[@]+${SCOPES[@]}}; do
+	ENVS+=("DHALL_LOCAL_$scope=True")
+done
+
+# make a pretty version of envs without the implicit fallback code
+ENVS_PP=("${ENVS[@]}")
+for ENV_FILE in "${ENV_FILES[@]+${ENV_FILES[@]}}"; do
+	# Load into new vars because read replaces existing array
+	LINES="$(env_file_lines "$ENV_FILE")"
+	NEW_VARS=()
+	IFS=$'\n' read -d '' -r -a NEW_VARS <<< "$(echo "$LINES")" || true
+	ENVS_PP+=("${NEW_VARS[@]+${NEW_VARS[@]}}")
+	for NEW_VAR in "${NEW_VARS[@]+${NEW_VARS[@]}}"; do
+		KEY="${NEW_VAR%%=*}"
+		VALUE="${NEW_VAR#*=}"
+		ENVS+=("$KEY=($VALUE) ? "$'\n'"\"importing env:${KEY} failed; evaluate it directly for the underlying error\" true")
+		echo >&2 "[ $KEY=$VALUE ]"
+	done
+done
+
+# set -x
+# echo >&2 "[ exec: env ${ENVS[@]} $@ ]"
+exec env "${ENVS[@]}" "$@"
