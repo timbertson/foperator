@@ -1,7 +1,7 @@
 package foperator.internal
 
 import cats.Eq
-import cats.effect.concurrent.{Deferred, MVar, MVar2}
+import cats.effect.concurrent.{Deferred}
 import cats.effect.{ExitCase, Fiber}
 import cats.implicits._
 import foperator.fixture.{Resource, ResourceSpec, ResourceStatus, resource}
@@ -247,7 +247,7 @@ object DispatcherTest extends SimpleTimedTaskSuite with Logging {
     }
 
     for {
-      state <- MVar[Task].of(Map.empty: StateMap[Task, Unit])
+      state <- MMVar[Task].of(Map.empty: StateMap[Task, Unit])
       errorDeferred <- Deferred[Task, Throwable]
       result <- Dispatcher.main(state, errorDeferred, loop, input).materialize
     } yield {
@@ -257,7 +257,7 @@ object DispatcherTest extends SimpleTimedTaskSuite with Logging {
 
   timedTest("removes the running loop if the resource is deleted") {
     for {
-      state <- MVar[Task].of(Map.empty: StateMap[Task, Id[Resource]])
+      state <- MMVar[Task].of(Map.empty: StateMap[Task, Id[Resource]])
       ctx <- spawn(
         reconcile = _ => Task.sleep(1.second).as(ReconcileResult.Ok),
         state = Some(state)
@@ -347,7 +347,7 @@ object DispatcherTest extends SimpleTimedTaskSuite with Logging {
   def spawn(
     reconcile: Resource => Task[ReconcileResult] = defaultReconcile,
     opts: ReconcileOptions = ReconcileOptions(),
-    state: Option[MVar2[Task, Dispatcher.StateMap[Task, Id[Resource]]]] = None,
+    state: Option[MMVar[Task, Dispatcher.StateMap[Task, Id[Resource]]]] = None,
     doTick: Boolean = true,
   ): Task[Ctx] = {
     def wrapReconciler(audit: Audit[Interaction], fn: Resource => Task[ReconcileResult])(@annotation.unused _client: TestClient[Task], res: ResourceState[Resource]) = res match {

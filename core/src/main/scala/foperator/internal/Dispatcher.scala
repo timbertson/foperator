@@ -1,11 +1,73 @@
 package foperator.internal
 
-import cats.effect.concurrent.{Deferred, MVar, MVar2, Semaphore}
-import cats.effect.{Concurrent, Fiber, Resource, Timer}
+import cats.effect.concurrent.{Deferred, Ref, Semaphore}
+import cats.effect.{Concurrent, ExitCase, Fiber, Resource, Timer}
 import cats.implicits._
 import foperator._
 import foperator.types.ObjectResource
 import fs2.Stream
+
+import java.lang.AssertionError
+import scala.collection.immutable.Queue
+
+trait MMVar[IO[_], T] {
+  def modify[R](f: T => IO[(T, R)]): IO[R]
+  def modify_(f: T => IO[T]): IO[Unit]
+  def read: IO[T]
+  def tryRead: IO[Option[T]]
+}
+
+object MMVar {
+  private sealed trait State[IO[_], T]
+  private case class Present[IO[_], T](value: T) extends State[IO, T]
+  // TODO waiters?
+  private case class Absent[IO[_]: Concurrent, T](signal: Deferred[IO, Unit]) extends State[IO, T]
+
+  def apply[IO[_]](implicit io: Concurrent[IO]) = new MMVar.Builder[IO]()
+  class Builder[IO[_]]()(implicit io: Concurrent[IO]){
+    def of[T](initial: T): IO[MMVar[IO, T]] = for {
+      ref <- Ref[IO].of[State[IO, T]](Present(initial))
+    } yield (new MMVar[IO, T] {
+
+      private def putFromEmpty(t: T): IO[Unit] =
+        // NOTE: we set the new state first, _then_ trigger the deferred to let everyone know about it
+        io.uncancelable(ref.getAndSet(Present(t)).flatMap {
+          case _: Present[IO, T] => io.raiseError(new AssertionError("Impossible!"))
+          case Absent(p) => p.complete(())
+        })
+
+      override def modify[R](f: T => IO[(T, R)]): IO[R] = ref.getAndUpdate {
+        // TODO remove unsafe
+        case Present(_) => Absent(Deferred.unsafe[IO, Unit])
+        case a@Absent(_) => a
+      }.flatMap {
+        // TODO onError / cancellation
+        case Present(v) => {
+          val withError = io.handleErrorWith(f(v)) {
+            err => putFromEmpty(v) >> io.raiseError[(T, R)](err)
+          }
+          val withCancellation = io.onCancel(withError)(putFromEmpty(v))
+          withCancellation.flatMap {
+            case ((newState, ret)) => putFromEmpty(newState).as(ret)
+          }
+        }
+        case Absent(signal) => signal.get >> modify(f)
+      }
+
+      override def modify_(f: T => IO[T]): IO[Unit] = modify(t => f(t).map(t => (t, ())))
+
+      override def read: IO[T] = ref.get.flatMap {
+        case Present(v) => io.pure(v)
+        case Absent(signal) => signal.get.flatMap(_ => read)
+      }
+
+      override def tryRead: IO[Option[T]] = ref.get.map {
+        case Present(v) => Some(v)
+        case Absent(_) => None
+      }
+    })
+  }
+}
 
 // Kicks off reconcile actions for all tracked resources,
 // supporting periodic reconciles and a concurrency limit
@@ -25,7 +87,7 @@ private[foperator] object Dispatcher extends Logging {
   }
 
   private [foperator] def main[IO[_], K](
-    state: MVar2[IO, StateMap[IO, K]],
+    state: MMVar[IO, StateMap[IO, K]],
     error: Deferred[IO, Throwable],
     loop: ReconcileLoop[IO, K],
     input: Stream[IO, K]
@@ -63,12 +125,12 @@ private[foperator] object Dispatcher extends Logging {
     opts: ReconcileOptions,
 
     // used in tests:
-    stateOverride: Option[MVar2[IO, StateMap[IO, Id[T]]]] = None,
+    stateOverride: Option[MMVar[IO, StateMap[IO, Id[T]]]] = None,
   )(implicit io: Concurrent[IO], timer: Timer[IO], res: ObjectResource[T]): Resource[IO, IO[Unit]] =
   {
     def retryDelay(count: ErrorCount) = opts.retryDelay(count.value)
     val acquire = for {
-      state <- stateOverride.fold(MVar[IO].of(Map.empty: StateMap[IO, Id[T]]))(io.pure)
+      state <- stateOverride.fold(MMVar[IO].of(Map.empty: StateMap[IO, Id[T]]))(io.pure)
       error <- Deferred[IO, Throwable]
       semaphore <- Semaphore[IO](opts.concurrency.toLong)
     } yield {
@@ -109,7 +171,7 @@ private[foperator] object Dispatcher extends Logging {
 
 
   // adapt the full dispatcher state to provide an individual updater
-  private [foperator] class Updater[IO[_], K](state: MVar2[IO, StateMap[IO, K]])
+  private [foperator] class Updater[IO[_], K](state: MMVar[IO, StateMap[IO, K]])
     (implicit io: Concurrent[IO]) extends StateUpdater[IO, K]
   {
     override def apply[T](key: K, fn: State[IO] => IO[(NewState[IO], T)]): IO[T] = {
@@ -136,7 +198,7 @@ private[foperator] object Dispatcher extends Logging {
     }
   }
 
-  private def cancel[IO[_], K](state: MVar2[IO, StateMap[IO, K]])(implicit io: Concurrent[IO], res: ObjectResource[_]): IO[Unit] = {
+  private def cancel[IO[_], K](state: MMVar[IO, StateMap[IO, K]])(implicit io: Concurrent[IO], res: ObjectResource[_]): IO[Unit] = {
     state.tryRead.flatMap {
       case None => io.delay(logger.warn("[{}] Can't cancel active fibers; state is empty", res.kind))
       case Some(stateMap) => {
