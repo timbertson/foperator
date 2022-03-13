@@ -1,15 +1,16 @@
 package foperator
 
 import cats.Eq
+import cats.effect.IO
 import cats.implicits._
 import foperator.ResourceState.{Active, SoftDeleted}
 import foperator.fixture._
 import foperator.testkit.TestClient
 import monix.eval.Task
 import net.gfxmonk.auditspec._
-import weaver.monixcompat.SimpleTaskSuite
+import weaver.SimpleIOSuite
 
-trait ReconcilerTest { self: SimpleTaskSuite =>
+trait ReconcilerTest { self: SimpleIOSuite =>
   import ReconcilerTest._
 
   def reconcile(
@@ -20,7 +21,7 @@ trait ReconcilerTest { self: SimpleTaskSuite =>
     wrapReconciler: (Audit[Interaction], Reconciler[Task, TestClient[Task], Resource]) => Reconciler[Task, TestClient[Task], Resource] = (_, r) => r
   ) = test(desc) {
     Audit.resource[Interaction].use { audit =>
-      val reconciler = wrapReconciler(audit, TestClient.Reconciler[Resource]
+      val reconciler = wrapReconciler(audit, TestClient[IO].Reconciler[Resource]
         .run(_ => audit.record(Reconcile))
         .withFinalizer(NAME, _ => audit.record(Finalize) >> finalizeResult))
       for {
@@ -52,7 +53,7 @@ object ReconcilerTest {
   val NAME = "finalizerName"
   implicit val eq: Eq[Interaction] = Eq.fromUniversalEquals
 
-  object ActiveResources extends SimpleTaskSuite with ReconcilerTest {
+  object ActiveResources extends SimpleIOSuite with ReconcilerTest {
     reconcile("adds the finalizer if empty",
       resource = Active(Resource.fixture),
       actions = List(SetFinalizers(List(NAME))))
@@ -67,7 +68,7 @@ object ReconcilerTest {
     )
   }
 
-  object SoftDeletedResources extends SimpleTaskSuite with ReconcilerTest {
+  object SoftDeletedResources extends SimpleIOSuite with ReconcilerTest {
     reconcile("calls finalize then removes the finalizer",
       resource = SoftDeleted(ResourceState.addFinalizer(Resource.fixture, NAME).get),
       actions = List(Finalize, SetFinalizers(Nil))

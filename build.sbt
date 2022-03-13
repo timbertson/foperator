@@ -1,20 +1,16 @@
 import ScalaProject._
 
-val fs2Version = "2.5.10"
-val monixVersion = "3.4.0"
-val monixEval = "io.monix" %% "monix-eval" % monixVersion
-val monixReactive = "io.monix" %% "monix-reactive" % monixVersion
+val fs2Version = "3.2.5"
+val catsEffectVersion = "3.3.7"
 val logback = "ch.qos.logback" % "logback-classic" % "1.2.3"
 
-val weaverVersion = "0.6.9"
+val weaverVersion = "0.7.11"
 val weaverSettings = Seq(
   libraryDependencies ++= Seq(
     "com.disneystreaming" %% "weaver-cats" % weaverVersion % Test,
-    "com.disneystreaming" %% "weaver-monix" % weaverVersion % Test,
   ),
   testFrameworks ++= Seq(
     new TestFramework("weaver.framework.CatsEffect"),
-    new TestFramework("weaver.framework.Monix"),
   )
 )
 
@@ -25,8 +21,7 @@ val common = Seq(
   scalacOptions ~= (_ filterNot (_ == "-Xfatal-warnings")),
 
   libraryDependencies ++= Seq(
-    "org.typelevel" %% "cats-core" % "2.1.0",
-    "org.typelevel" %% "cats-effect" % "2.5.3",
+    "org.typelevel" %% "cats-effect-std" % catsEffectVersion,
     "co.fs2" %% "fs2-core" % fs2Version,
     "org.slf4j" % "slf4j-api" % "1.7.9",
   )
@@ -46,7 +41,8 @@ lazy val testkit = (project in file("testkit"))
   .settings(
     name := "foperator-testkit",
     libraryDependencies ++= Seq(
-      monixEval,
+      "org.typelevel" %% "cats-effect" % catsEffectVersion,
+      "org.typelevel" %% "cats-effect-testkit" % catsEffectVersion,
     )
   ).dependsOn(core)
 
@@ -57,7 +53,6 @@ lazy val tests = (project in file("tests"))
   .settings(
     name := "foperator-tests",
     libraryDependencies ++= Seq(
-      monixEval,
       logback,
       "net.gfxmonk" %% "auditspec" % "0.1.0" % "test",
     )
@@ -73,7 +68,6 @@ lazy val skuber = (project in file("backends/skuber"))
     libraryDependencies ++= Seq(
       "io.skuber" %% "skuber" % "2.6.2",
       "co.fs2" %% "fs2-reactive-streams" % fs2Version,
-      monixReactive,
       "com.typesafe.akka" %% "akka-slf4j" % "2.6.15",
     )
   ).dependsOn(core)
@@ -84,9 +78,7 @@ lazy val kclient = (project in file("backends/kubernetes-client"))
   .settings(
     name := "foperator-backend-kubernetes-client",
     libraryDependencies ++= Seq(
-      // v0.7.0 requires cats 3.x
-      "com.goyeau" %% "kubernetes-client" % "0.6.0",
-      monixEval
+      "com.goyeau" %% "kubernetes-client" % "0.8.1",
     )
   ).dependsOn(core)
 

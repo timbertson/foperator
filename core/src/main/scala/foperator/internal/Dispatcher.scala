@@ -1,8 +1,9 @@
 package foperator.internal
 
-import cats.effect.concurrent.{Deferred, Semaphore}
-import cats.effect.{Concurrent, Fiber, Resource, Timer}
+import cats.effect.std.Semaphore
+import cats.effect._
 import cats.implicits._
+import cats.syntax._
 import foperator._
 import foperator.types.ObjectResource
 import fs2.Stream
@@ -10,12 +11,12 @@ import fs2.Stream
 // Kicks off reconcile actions for all tracked resources,
 // supporting periodic reconciles and a concurrency limit
 private[foperator] object Dispatcher extends Logging {
-  def run[IO[_], C, T](
+  def run[IO[_]: Async, C, T: ObjectResource](
     client: C,
     input: ReconcileSource[IO, T],
     reconcile: Reconciler.Fn[IO, C, T],
     opts: ReconcileOptions,
-  )(implicit io: Concurrent[IO], timer: Timer[IO], res: ObjectResource[T]): IO[Unit] = {
+  ): IO[Unit] = {
     Dispatcher.resource[IO, C, T](
       client,
       input,
@@ -44,7 +45,7 @@ private[foperator] object Dispatcher extends Logging {
             }
             case None => {
               logger.debug("Spawning reconcile loop for {}", id)
-              val task = io.handleErrorWith(loop.run(id))(error.complete)
+              val task = io.handleErrorWith(loop.run(id))(t => error.complete(t).void)
               io.start(task).map(fiber => (Reconciling, fiber))
             }
           }).map { newState =>
@@ -63,8 +64,8 @@ private[foperator] object Dispatcher extends Logging {
     opts: ReconcileOptions,
 
     // used in tests:
-    stateOverride: Option[IORef[IO, StateMap[IO, Id[T]]]] = None,
-  )(implicit io: Concurrent[IO], timer: Timer[IO], res: ObjectResource[T]): Resource[IO, IO[Unit]] =
+    stateOverride: Option[IORef[IO, StateMap[IO, Id[T]]]] = None
+  )(implicit io: Async[IO], res: ObjectResource[T]): Resource[IO, IO[Unit]] =
   {
     def retryDelay(count: ErrorCount) = opts.retryDelay(count.value)
     val acquire = for {
@@ -73,14 +74,15 @@ private[foperator] object Dispatcher extends Logging {
       semaphore <- Semaphore[IO](opts.concurrency.toLong)
     } yield {
       val updater = new Updater(state)
-      def action(id: Id[T]): IO[Option[ReconcileResult]] =
-        semaphore.withPermit(input.get(id).flatMap {
+      def action(id: Id[T]): IO[Option[ReconcileResult]] = semaphore.permit.use { _ =>
+        input.get(id).flatMap {
           case None => io.pure(None)
           case Some(r) => for {
             _ <- io.delay(logger.info("[{}] Reconciling {} v{}", res.kind, id, res.version(r.raw).getOrElse("0")))
             result <- reconcile(client, r)
           } yield Some(result)
-        })
+        }
+      }
 
       val resourceLoop = new ReconcileLoop.Impl[IO, Id[T]](action, updater, retryDelay)
       val run = io.delay(logger.info("[{}] Starting reconciler", res.kind)) >> main(state, error, resourceLoop, input.ids)
@@ -105,7 +107,7 @@ private[foperator] object Dispatcher extends Logging {
   }
 
   // dispatcher state
-  type StateMap[IO[_], K] = Map[K, (State[IO], Fiber[IO, Unit])]
+  type StateMap[IO[_], K] = Map[K, (State[IO], Fiber[IO, Throwable, Unit])]
 
 
   // adapt the full dispatcher state to provide an individual updater

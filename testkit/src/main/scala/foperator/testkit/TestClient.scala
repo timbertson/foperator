@@ -1,32 +1,28 @@
 package foperator.testkit
 
 import cats.Eq
-import cats.effect.concurrent.{MVar, MVar2}
-import cats.effect.{Clock, Concurrent}
+import cats.effect.{Async, Clock, Concurrent}
 import cats.implicits._
 import foperator._
-import foperator.internal.Logging
+import foperator.internal.{IORef, Logging}
 import foperator.types._
 import fs2.BroadcastTopic
-import monix.eval.Task
-import monix.execution.Scheduler
-import monix.execution.schedulers.CanBlock
 
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 
 class TestClient[IO[_]](
-  state: MVar2[IO, TestClient.State],
+  state: IORef[IO, TestClient.State],
   val topic: BroadcastTopic[IO, Event[TestClient.Entry]],
   val auditors: List[Event[TestClient.Entry] => IO[Unit]],
-)(implicit io: Concurrent[IO]) extends Client[IO, TestClient[IO]] with Logging {
+)(implicit io: Async[IO]) extends Client[IO, TestClient[IO]] with Logging {
 
   override def apply[T]
     (implicit e: Engine[IO, TestClient[IO], T], res: ObjectResource[T])
     : Operations[IO, TestClient[IO], T]
     = new Operations[IO, TestClient[IO], T](this)
 
-  def readState = state.read
+  def readState = state.readLast
 
   def all[T](implicit res: ObjectResource[T]): IO[List[T]] = readState.map { state =>
     state.toList.mapFilter {
@@ -52,28 +48,30 @@ class TestClient[IO[_]](
   }
 }
 
-object TestClient extends Client.Companion[Task, TestClient[Task]] {
+object TestClient {
   // Internal state is untyped for simplicity.
   // Correct usage requires that no two types have the same `kind` + `apiVersion`
   private [testkit] type State = Map[ResourceKey, Any]
   private [testkit] type Entry = (ResourceKey, Any)
 
-  def apply[IO[_]](implicit io: Concurrent[IO]): IO[TestClient[IO]] = {
-    for {
-      state <- MVar.of(Map.empty: State)
-      topic <- BroadcastTopic[IO, Event[(ResourceKey, Any)]]
-    } yield new TestClient[IO](state, topic, Nil)
+  class Companion[IO[_]] extends Client.Companion[IO, TestClient[IO]] {
+    def make(implicit io: Async[IO]): IO[TestClient[IO]] = {
+      for {
+        state <- IORef[IO].of(Map.empty: State)
+        topic <- BroadcastTopic[IO, Event[(ResourceKey, Any)]]
+      } yield new TestClient[IO](state, topic, Nil)
+    }
   }
 
-  def unsafe(): TestClient[Task] = apply[Task].runSyncUnsafe()(Scheduler.global, implicitly[CanBlock])
+  def apply[IO[_]](implicit io: Async[IO]): Companion[IO] = new Companion[IO]
 
   implicit def implicitEngine[IO[_], T]
-    (implicit io: Concurrent[IO], clock: Clock[IO], res: ObjectResource[T], eq: Eq[T])
+    (implicit io: Async[IO], clock: Clock[IO], res: ObjectResource[T], eq: Eq[T])
   : foperator.types.Engine[IO, TestClient[IO], T]
   = new TestClientEngineImpl[IO, T]
 
   implicit def implicitOps[IO[_], T](c: TestClient[IO])
-    (implicit io: Concurrent[IO], engine: Engine[IO, TestClient[IO], T], res: ObjectResource[T])
+    (implicit io: Async[IO], engine: Engine[IO, TestClient[IO], T], res: ObjectResource[T])
   : Operations[IO, TestClient[IO], T]
   = new Operations(c)
 }
@@ -207,8 +205,8 @@ class TestClientEngineImpl[IO[_], T]
               // no-op
               io.pure(stateMap)
             } else {
-              clock.realTime(TimeUnit.SECONDS).flatMap { seconds =>
-                val updated = res.softDeletedAt(existing, Instant.ofEpochSecond(seconds))
+              clock.realTime.flatMap { time =>
+                val updated = res.softDeletedAt(existing, Instant.ofEpochSecond(time.toSeconds))
                 val event: Event[TestClient.Entry] = Event.Updated((key, updated))
                 c.publish(event).as(stateMap.updated(key, updated))
               }

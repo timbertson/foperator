@@ -1,10 +1,9 @@
 package foperator
 
 import cats.Monad
-import cats.effect.Concurrent
-import cats.effect.concurrent.{MVar, MVar2}
+import cats.effect.{Async, Concurrent, Sync}
 import cats.implicits._
-import foperator.internal.{IOUtil, Logging}
+import foperator.internal.{IORef, IOUtil, Logging}
 import foperator.types._
 import fs2.{BroadcastTopic, Chunk, Stream}
 
@@ -30,10 +29,10 @@ object ResourceMirror extends Logging {
 
   private class Impl[IO[_], T](
     // TODO could this just be a Ref?
-    state: MVar2[IO, ResourceMap[T]],
+    state: IORef[IO, ResourceMap[T]],
     idStream: Stream[IO, Id[T]],
   )(implicit io: Monad[IO]) extends ResourceMirror[IO, T] {
-    override def all: IO[Map[Id[T], ResourceState[T]]] = state.read
+    override def all: IO[Map[Id[T], ResourceState[T]]] = state.readLast
     override def active: IO[Map[Id[T], T]] = io.map(all)(_.mapFilter(ResourceState.active))
     override def allValues: IO[List[ResourceState[T]]] = all.map(_.values.toList)
     override def activeValues: IO[List[T]] = active.map(_.values.toList)
@@ -43,7 +42,7 @@ object ResourceMirror extends Logging {
   }
 
   private [foperator] def apply[IO[_], C, T, R](client: C, opts: ListOptions)(block: ResourceMirror[IO, T] => IO[R])
-    (implicit io: Concurrent[IO], res: ObjectResource[T], e: Engine[IO, C, T]): IO[R] = {
+    (implicit io: Async[IO], res: ObjectResource[T], e: Engine[IO, C, T]): IO[R] = {
     for {
       _ <- io.delay(logger.info("[{}]: Starting ResourceMirror", res.kind))
       listAndWatch <- e.listAndWatch(client, opts).adaptError(new RuntimeException(s"Error listing / watching ${res.kind}", _))
@@ -52,17 +51,17 @@ object ResourceMirror extends Logging {
       updates = rawUpdates.handleErrorWith(e =>
         Stream.eval(io.raiseError(new RuntimeException(s"Error watching ${res.kind} resources", e)))
       )
-      state <- MVar[IO].of(initial.map(obj => res.id(obj) -> ResourceState.of(obj)).toMap)
+      state <- IORef[IO].of(initial.map(obj => res.id(obj) -> ResourceState.of(obj)).toMap)
       trackedUpdates = trackState(state, updates).map(e => res.id(e.raw))
       topic <- BroadcastTopic[IO, Id[T]]
       consume = trackedUpdates.through(topic.publish).compile.drain
-      ids = injectInitial(state.read.map(_.keys.toList), topic)
+      ids = injectInitial(state.readLast.map(_.keys.toList), topic)
       impl = new Impl(state, ids)
       result <- IOUtil.withBackground(IOUtil.nonTerminating(consume), block(impl))
     } yield result
   }
 
-  private def injectInitial[IO[_], T](initial: IO[List[T]], topic: BroadcastTopic[IO, T])(implicit io: Concurrent[IO]): Stream[IO, T] = {
+  private def injectInitial[IO[_], T](initial: IO[List[T]], topic: BroadcastTopic[IO, T])(implicit io: Sync[IO]): Stream[IO, T] = {
     Stream.resource(topic.subscribeAwait(1)).flatMap { updates =>
       // first emit initial IDs, then follow with updates
       Stream.evalUnChunk(io.map(initial) { items =>
@@ -73,21 +72,17 @@ object ResourceMirror extends Logging {
   }
 
   private def trackState[IO[_], T]
-    (state: MVar2[IO, ResourceMap[T]], input: Stream[IO, Event[T]])(implicit
-      io: Concurrent[IO],
+    (state: IORef[IO, ResourceMap[T]], input: Stream[IO, Event[T]])(implicit
+      io: Sync[IO],
       res: ObjectResource[T],
     ): Stream[IO, Event[T]] = {
-    def transform(f: ResourceMap[T] => ResourceMap[T]) = {
-      io.flatMap(state.take)((initial: ResourceMap[T]) => io.uncancelable(state.put(f(initial))))
-    }
-
     input.evalTap[IO, Unit] { event =>
       val id = res.id(event.raw)
       val desc = s"${Event.desc(event)}($id, v${res.version(event.raw).getOrElse("")})"
       io.delay(logger.debug("[{}] Updating state for: {}", res.kind, desc))
     }.evalTap {
-      case Event.Deleted(t) => transform(s => s.removed(res.id(t)))
-      case Event.Updated(t) => transform(s => s.updated(res.id(t), ResourceState.of(t)))
+      case Event.Deleted(t) => state.update_(s => s.removed(res.id(t)))
+      case Event.Updated(t) => state.update_(s => s.updated(res.id(t), ResourceState.of(t)))
     }
   }
 }

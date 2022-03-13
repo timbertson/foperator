@@ -1,8 +1,8 @@
 package foperator.internal
 
 import cats.implicits._
-import cats.effect.concurrent.Deferred
-import cats.effect.{Concurrent, Timer}
+import cats.effect.{Async, Concurrent, Deferred}
+import cats.effect.kernel.Temporal
 import foperator.ReconcileResult
 import foperator.internal.Dispatcher.{Dirty, Reconciling, State, StateUpdater, Terminate, Waiting}
 
@@ -19,7 +19,7 @@ object ReconcileLoop extends Logging {
     action: K => IO[Option[ReconcileResult]],
     updateState: StateUpdater[IO, K],
     retryTime: ErrorCount.RetryDelay,
-  )(implicit io: Concurrent[IO], timer: Timer[IO]) extends ReconcileLoop[IO, K] {
+  )(implicit io: Async[IO]) extends ReconcileLoop[IO, K] {
     def impossibleState[R](desc: String, k: K, state: State[IO]) =
       io.raiseError[R](new RuntimeException(s"[{$k}] impossible state while $desc: ${state}"))
 
@@ -42,7 +42,7 @@ object ReconcileLoop extends Logging {
               val wokeup = wakeup.get.map { _ =>
                 logger.debug("[{}] Reconcile loop woken from sleep", k)
               }
-              val delayCompleted = timer.sleep(delay).map { _ =>
+              val delayCompleted = io.sleep(delay).map { _ =>
                 logger.debug("[{}] Reconcile loop rescheduled after sleeping {}", k, delay)
               }
               val task = io.race(wokeup, delayCompleted) >>
@@ -51,7 +51,7 @@ object ReconcileLoop extends Logging {
                   case Dirty | Waiting(_) => io.pure((Reconciling, reconcileN(k, errorCount)))
                 }).flatMap(identity)
               logger.debug("[{}] Sleeping for {}", k, delay)
-              (Waiting[IO](wakeup.complete(())), task)
+              (Waiting[IO](wakeup.complete(()).void), task)
             }
           }
         }

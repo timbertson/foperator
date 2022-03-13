@@ -1,11 +1,12 @@
 package foperator.internal
 
+import cats.effect.std.Semaphore
 import cats.implicits._
-import cats.effect.Concurrent
-import cats.effect.concurrent.{Ref, Semaphore}
+import cats.effect.{Concurrent, MonadCancel, Ref, Sync}
 
 // Reduced API version of cats-effect v2.x MVar, which was removed in 3.x
 trait IORef[IO[_], T] {
+  def update_(f: T => T): IO[Unit]
   def modify[R](f: T => IO[(T, R)]): IO[R]
   def modify_(f: T => IO[T]): IO[Unit]
   def readLast: IO[T]
@@ -19,11 +20,13 @@ object IORef {
       ref <- Ref[IO].of[T](initial)
       sem <- Semaphore[IO](1)
     } yield (new IORef[IO, T] {
-      override def modify[R](f: T => IO[(T, R)]): IO[R] = sem.withPermit {
+      override def update_(f: T => T): IO[Unit] = modify_(x => io.pure(f(x)))
+
+      override def modify[R](f: T => IO[(T, R)]): IO[R] = sem.permit.use { _ =>
         for {
           v <- ref.get
           pair <- f(v)
-          _ <- io.uncancelable(ref.set(pair._1))
+          _ <- io.uncancelable(poll => ref.set(pair._1) >> poll(io.unit))
         } yield pair._2
       }
 

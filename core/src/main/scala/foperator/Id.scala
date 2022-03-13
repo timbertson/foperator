@@ -14,7 +14,7 @@ class Id[T] private(val namespace: String, val name: String) {
   override def hashCode(): Int = name.hashCode()
 
   override def equals(obj: Any): Boolean = {
-    obj != null && obj.isInstanceOf[Id[T]] && {
+    obj != null && obj.isInstanceOf[Id[_]] && {
       val instance = obj.asInstanceOf[Id[T]]
       instance.name == name && instance.namespace == namespace
     }
