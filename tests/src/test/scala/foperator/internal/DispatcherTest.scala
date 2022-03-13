@@ -247,7 +247,7 @@ object DispatcherTest extends SimpleTimedTaskSuite with Logging {
     }
 
     for {
-      state <- MMVar[Task].of(Map.empty: StateMap[Task, Unit])
+      state <- IORef[Task].of(Map.empty: StateMap[Task, Unit])
       errorDeferred <- Deferred[Task, Throwable]
       result <- Dispatcher.main(state, errorDeferred, loop, input).materialize
     } yield {
@@ -257,7 +257,7 @@ object DispatcherTest extends SimpleTimedTaskSuite with Logging {
 
   timedTest("removes the running loop if the resource is deleted") {
     for {
-      state <- MMVar[Task].of(Map.empty: StateMap[Task, Id[Resource]])
+      state <- IORef[Task].of(Map.empty: StateMap[Task, Id[Resource]])
       ctx <- spawn(
         reconcile = _ => Task.sleep(1.second).as(ReconcileResult.Ok),
         state = Some(state)
@@ -267,14 +267,14 @@ object DispatcherTest extends SimpleTimedTaskSuite with Logging {
       _ <- ctx.expectAudit { l =>
         expect(l === List(Updated(r1.name), ReconcileStart(r1.name)))
       }
-      _ <- state.read.flatMap(s => expect(s.size === 1).failFast)
+      _ <- state.readLast.flatMap(s => expect(s.size === 1).failFast)
 
       _ <- ctx.delete(r1.id)
       _ <- ctx.tick(1.second)
       _ <- ctx.expectAudit { l =>
         expect(l === List(Deleted(r1.name), ReconcileEnd(r1.name)))
       }
-      _ <- state.read.flatMap(s => expect(s.size === 0).failFast)
+      _ <- state.readLast.flatMap(s => expect(s.size === 0).failFast)
     } yield success
   }
 
@@ -347,7 +347,7 @@ object DispatcherTest extends SimpleTimedTaskSuite with Logging {
   def spawn(
     reconcile: Resource => Task[ReconcileResult] = defaultReconcile,
     opts: ReconcileOptions = ReconcileOptions(),
-    state: Option[MMVar[Task, Dispatcher.StateMap[Task, Id[Resource]]]] = None,
+    state: Option[IORef[Task, Dispatcher.StateMap[Task, Id[Resource]]]] = None,
     doTick: Boolean = true,
   ): Task[Ctx] = {
     def wrapReconciler(audit: Audit[Interaction], fn: Resource => Task[ReconcileResult])(@annotation.unused _client: TestClient[Task], res: ResourceState[Resource]) = res match {
