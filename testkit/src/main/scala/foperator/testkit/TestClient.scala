@@ -55,7 +55,7 @@ object TestClient {
   private [testkit] type Entry = (ResourceKey, Any)
 
   class Companion[IO[_]] extends Client.Companion[IO, TestClient[IO]] {
-    def make(implicit io: Async[IO]): IO[TestClient[IO]] = {
+    def client(implicit io: Async[IO]): IO[TestClient[IO]] = {
       for {
         state <- IORef[IO].of(Map.empty: State)
         topic <- BroadcastTopic[IO, Event[(ResourceKey, Any)]]

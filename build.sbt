@@ -54,7 +54,7 @@ lazy val tests = (project in file("tests"))
     name := "foperator-tests",
     libraryDependencies ++= Seq(
       logback,
-      "net.gfxmonk" %% "auditspec" % "0.1.0" % "test",
+      "net.gfxmonk" %% "auditspec" % "0.3.0" % "test",
     )
   )
   .settings(weaverSettings)
