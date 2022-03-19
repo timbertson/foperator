@@ -1,7 +1,7 @@
 package foperator.sample.mutator
 
 import cats.Eq
-import cats.effect.ExitCode
+import cats.effect.{ExitCode, IO, IOApp}
 import cats.implicits._
 import foperator._
 import foperator.backend.Skuber
@@ -12,47 +12,43 @@ import foperator.sample.Models.Skuber._
 import foperator.sample.PrettyPrint.Implicits._
 import foperator.sample.{AdvancedOperator, PrettyPrint, SimpleOperator}
 import foperator.types.{Engine, ObjectResource}
-import monix.eval.{Task, TaskApp}
-import monix.execution.Scheduler
-import monix.reactive.MulticastStrategy
-import monix.reactive.subjects.ConcurrentSubject
 import skuber.CustomResource
 
 import java.util.concurrent.TimeUnit
 import scala.concurrent.duration.FiniteDuration
 import scala.util.{Failure, Random, Success}
 
-object Simple extends TaskApp with Logging {
-  override def run(args: List[String]): Task[ExitCode] = {
-    Skuber.default.use { client =>
+object Simple extends IOApp.Simple with Logging {
+  override def run: IO[Unit] = {
+    Skuber[IO].default().use { client =>
       val simple = new SimpleOperator(client)
       simple.install >> Mutator.withResourceMirrors(client) { (greetings, people) =>
-        Task.parZip2(
+        List(
           client[Greeting].runReconcilerWithInput(greetings, SimpleOperator.reconciler),
           new Mutator(client, greetings, people).run
-        ).void
+        ).parSequence_
       }
-    }.as(ExitCode.Success)
+    }
   }
 }
 
-object Advanced extends TaskApp {
-  override def run(args: List[String]): Task[ExitCode] = {
-    Skuber.default.use { client =>
+object Advanced extends IOApp.Simple {
+  override def run: IO[Unit] = {
+    Skuber[IO].default().use { client =>
       val advanced = new AdvancedOperator(client)
       advanced.install >> Mutator.withResourceMirrors(client) { (greetings, people) =>
-        Task.parZip2(
+        List(
           advanced.runWith(greetings, people),
           new Mutator(client, greetings, people).run
-        ).void
+        ).parSequence_
       }
-    }.as(ExitCode.Success)
+    }
   }
 }
 
-object Standalone extends TaskApp {
-  override def run(args: List[String]): Task[ExitCode] = {
-    Skuber.default.use { client =>
+object Standalone extends IOApp.Simple {
+  override def run: IO[Unit] = {
+    Skuber[IO].default().use { client =>
       new AdvancedOperator(client).install >>
       Mutator.withResourceMirrors(client) { (greetings, people) =>
         new Mutator(client, greetings, people).run
@@ -85,14 +81,14 @@ object Mutator extends Logging {
 
     def eager(decisions: Decision*) = Choice(decisions.toList, identity[Decision])
 
-    def randomAction(random: Random, decision: Decision): Task[Action] = {
-      def nextInt(limit: Int) = Task(random.nextInt(limit))
+    def randomAction(random: Random, decision: Decision): IO[Action] = {
+      def nextInt(limit: Int) = IO(random.nextInt(limit))
 
       decision match {
-        case Concrete(action) => Task.pure(action)
+        case Concrete(action) => IO.pure(action)
         case choice: Choice[_] => {
           if (choice.isEmpty) {
-            Task.pure(Noop)
+            IO.pure(Noop)
           } else {
             nextInt(choice.inputs.length).map(choice.get).flatMap(randomAction(random, _))
           }
@@ -103,22 +99,22 @@ object Mutator extends Logging {
 
   sealed trait Action {
     def conflictKey: Option[Id[_]]
-    def run: Task[Unit]
+    def run: IO[Unit]
     def pretty: String
   }
 
   case object Noop extends Action {
-    override def run: Task[Unit] = Task.raiseError(new RuntimeException("No action found (reached a branch with no children)"))
+    override def run: IO[Unit] = IO.raiseError(new RuntimeException("No action found (reached a branch with no children)"))
 
     override def pretty: String = "Noop"
 
     override def conflictKey: Option[Id[_]] = None
   }
 
-  case class Delete[T](resource: T)(implicit rd: ObjectResource[T], ops: Operations[Task, _, T])
+  case class Delete[T](resource: T)(implicit rd: ObjectResource[T], ops: Operations[IO, _, T])
     extends Action
   {
-    override def run: Task[Unit] = ops.delete(Id.of(resource))
+    override def run: IO[Unit] = ops.delete(Id.of(resource))
 
     override def pretty: String = s"Delete[${rd.kind}](${rd.id(resource)})"
 
@@ -126,19 +122,19 @@ object Mutator extends Logging {
   }
 
   case class Create[T](random: Random, resource: T)
-    (implicit ops: Operations[Task, _, T], res: ObjectResource[T], n: WithName[T]) extends Action
+    (implicit ops: Operations[IO, _, T], res: ObjectResource[T], n: WithName[T]) extends Action
   {
     def pretty: String = s"Create[${res.kind}]"
 
-    private def randomId: Task[String] = {
-      Task(random.nextBytes(4)).map { bytes =>
+    private def randomId: IO[String] = {
+      IO(random.nextBytes(4)).map { bytes =>
         bytes.map(b => String.format("%02X", b & 0xff)).mkString.toLowerCase
       }
     }
 
     private def namedResource = randomId.map(id => n.withName(resource, id))
 
-    override def run: Task[Unit] = {
+    override def run: IO[Unit] = {
       namedResource.flatMap { resource =>
         ops.write(resource).void
       }
@@ -149,10 +145,10 @@ object Mutator extends Logging {
 
   case class Modify[Sp,St] private (initial: CustomResource[Sp,St], newSpec: Sp)(
     implicit res: ObjectResource[CustomResource[Sp, St]],
-    ops: Operations[Task, _, CustomResource[Sp,St]],
+    ops: Operations[IO, _, CustomResource[Sp,St]],
     pp: PrettyPrint[Sp]
   ) extends Action {
-    override def run: Task[Unit] = ops.write(initial.copy(spec=newSpec)).void
+    override def run: IO[Unit] = ops.write(initial.copy(spec=newSpec)).void
 
     def pretty: String = s"Modify[${res.kind}](${res.id(initial)}, ${pp.pretty(newSpec)})"
 
@@ -162,7 +158,7 @@ object Mutator extends Logging {
   object Modify {
     def spec[Sp,St](initial: CustomResource[Sp,St], newSpec: Sp)(
       implicit res: ObjectResource[CustomResource[Sp,St]],
-      ops: Operations[Task, _, CustomResource[Sp,St]],
+      ops: Operations[IO, _, CustomResource[Sp,St]],
       pp: PrettyPrint[Sp],
       eqSp: Eq[Sp]
     ): Action = {
@@ -177,31 +173,31 @@ object Mutator extends Logging {
 
   // Since we want to share one mirror globally, we use this as the toplevel hook, and run
   // all mutators / operators within the `op`
-  def withResourceMirrors[T](client: Skuber)(op: (ResourceMirror[Task, Greeting], ResourceMirror[Task, Person]) => Task[T]): Task[T] = {
-    Task(logger.info("Loading ... ")) >>
+  def withResourceMirrors[T](client: Skuber[IO])(op: (ResourceMirror[IO, Greeting], ResourceMirror[IO, Person]) => IO[T]): IO[T] = {
+    IO(logger.info("Loading ... ")) >>
       client.apply[Greeting].mirror { greetings =>
         client.apply[Person].mirror { people =>
-          Task(logger.info("Running ... ")) >>
+          IO(logger.info("Running ... ")) >>
             op(greetings, people)
         }
       }
   }
 }
 
-class Mutator[C](client: C, greetings: ResourceMirror[Task, Greeting], people: ResourceMirror[Task, Person])
+class Mutator[C](client: C, greetings: ResourceMirror[IO, Greeting], people: ResourceMirror[IO, Person])
   (implicit
-    ep: Engine[Task, C, Person],
-    eg: Engine[Task, C, Greeting],
+    ep: Engine[IO, C, Person],
+    eg: Engine[IO, C, Greeting],
   ) extends Logging {
 
   import Mutator._
 
-  def run: Task[ExitCode] = {
-    Task.parZip3(
+  def run: IO[Unit] = {
+    List(
       watchResource(people),
       watchResource(greetings),
       runRepl
-    ).map(_ => ExitCode.Success)
+    ).parSequence_
   }
 
   def rootDecision(random: Random, peopleUnsorted: List[Person], greetingsUnsorted: List[Greeting]): Decision = {
@@ -209,8 +205,8 @@ class Mutator[C](client: C, greetings: ResourceMirror[Task, Greeting], people: R
     val people = peopleUnsorted.sortBy(_.name)
     val greetings = greetingsUnsorted.sortBy(_.name)
     // these shouldn't really be implicit since they carry state, but it's convenient
-    implicit val personOps: Operations[Task, C, Person] = new Operations[Task, C, Person](client)
-    implicit val greetingOps: Operations[Task, C, Greeting] = new Operations[Task, C, Greeting](client)
+    implicit val personOps: Operations[IO, C, Person] = new Operations[IO, C, Person](client)
+    implicit val greetingOps: Operations[IO, C, Greeting] = new Operations[IO, C, Greeting](client)
 
     val deletePerson = Decision(people)(person => Decision(Delete(person)))
     val deleteGreeting = Decision(greetings)(greeting => Decision(Delete(greeting)))
@@ -270,11 +266,11 @@ class Mutator[C](client: C, greetings: ResourceMirror[Task, Greeting], people: R
     map.map { case (k,v) => (k.name, v) }
   }
 
-  def nextActions(random: Random, count: Int, filter: Action => Boolean): Task[List[Action]] = {
+  def nextActions(random: Random, count: Int, filter: Action => Boolean): IO[List[Action]] = {
     // Picks `count` actions, ensuring that all `conflictKeys` are distinct (i.e. the actions occur on different objects)
-    def pick(existing: List[Action]): Task[List[Action]] = {
+    def pick(existing: List[Action]): IO[List[Action]] = {
       if (existing.size == count) {
-        Task.pure(existing)
+        IO.pure(existing)
       } else {
         val conflicts = existing.flatMap(_.conflictKey)
         nextAction(random, { action =>
@@ -287,16 +283,16 @@ class Mutator[C](client: C, greetings: ResourceMirror[Task, Greeting], people: R
     pick(Nil)
   }
 
-  def nextAction(random: Random, filter: Action => Boolean): Task[Action] = {
-    def pick(root: Decision, limit: Int): Task[Action] = {
+  def nextAction(random: Random, filter: Action => Boolean): IO[Action] = {
+    def pick(root: Decision, limit: Int): IO[Action] = {
       if (limit <= 0) {
-        Task.pure(Noop)
+        IO.pure(Noop)
       } else {
         Decision.randomAction(random, root).flatMap { action =>
           if (action == Noop || !filter(action)) {
             pick(root, limit-1)
           } else {
-            Task.pure(action)
+            IO.pure(action)
           }
         }
       }
@@ -317,58 +313,59 @@ class Mutator[C](client: C, greetings: ResourceMirror[Task, Greeting], people: R
     } yield new StateValidator(peopleMap, greetingsMap)
   }
 
-  def runRepl: Task[Unit] = {
-    // TODO figure out a less terrible solution: https://github.com/monix/monix/issues/1242
-    val globalScheduler = Scheduler.global
-    val threadScheduler = Scheduler.singleThread("stdin", daemonic = true)
-    val getThread = Task {
-      Thread.currentThread
-    }.executeOn(threadScheduler)
-
-    val lines = ConcurrentSubject[String](MulticastStrategy.publish)(globalScheduler)
-    val readLoop = getThread.flatMap { thread =>
-      Task {
-        logger.info("--- ready (press return to mutate) ---")
-        while(true) {
-          scala.io.Source.stdin.getLines().foreach { line =>
-            lines.onNext(line)
-          }
-          lines.onComplete()
-        }
-      }.executeOn(threadScheduler).doOnCancel(Task {
-        println("Cancelling ...")
-        thread.interrupt()
-      }.executeOn(globalScheduler))
-    }
-
-    def doSomething(filter: Action => Boolean): Task[Unit] = {
-      nextAction(Random, filter).flatMap { action =>
-        logger.info(s"Running: ${prettyPrintAction.pretty(action)}")
-        action.run.materialize
-      }.flatMap {
-        case Success(_) => {
-          Task.sleep(FiniteDuration(200, TimeUnit.MILLISECONDS)) >>
-            stateValidator.flatMap(_.report(verbose = false))
-        }
-        case Failure(err) => Task(logger.warn(s"^^^ Failed: $err"))
-      }
-    }
-
-    val consume = lines.mapEval {
-      case "d" => doSomething(_.isInstanceOf[Delete[_]])
-      case "m" => doSomething(_.isInstanceOf[Modify[_,_]])
-      case "c" => doSomething(_.isInstanceOf[Create[_]])
-      case "" => doSomething(_ => true)
-      case " " => stateValidator.flatMap(_.report(verbose = true))
-      case other => {
-        Task(logger.error(s"Unknown command: ${other}, try c/m/d"))
-      }
-    }.mapEval(_ => Task(println("\n\n\n"))).completedL
-
-    Task.parZip2(readLoop, consume).void
+  def runRepl: IO[Unit] = {
+    ???
+//    // TODO figure out a less terrible solution: https://github.com/monix/monix/issues/1242
+//    val globalScheduler = Scheduler.global
+//    val threadScheduler = Scheduler.singleThread("stdin", daemonic = true)
+//    val getThread = IO {
+//      Thread.currentThread
+//    }.executeOn(threadScheduler)
+//
+//    val lines = ConcurrentSubject[String](MulticastStrategy.publish)(globalScheduler)
+//    val readLoop = getThread.flatMap { thread =>
+//      IO {
+//        logger.info("--- ready (press return to mutate) ---")
+//        while(true) {
+//          scala.io.Source.stdin.getLines().foreach { line =>
+//            lines.onNext(line)
+//          }
+//          lines.onComplete()
+//        }
+//      }.executeOn(threadScheduler).doOnCancel(IO {
+//        println("Cancelling ...")
+//        thread.interrupt()
+//      }.executeOn(globalScheduler))
+//    }
+//
+//    def doSomething(filter: Action => Boolean): IO[Unit] = {
+//      nextAction(Random, filter).flatMap { action =>
+//        logger.info(s"Running: ${prettyPrintAction.pretty(action)}")
+//        action.run.attempt
+//      }.flatMap {
+//        case Right(_) => {
+//          IO.sleep(FiniteDuration(200, TimeUnit.MILLISECONDS)) >>
+//            stateValidator.flatMap(_.report(verbose = false))
+//        }
+//        case Left(err) => IO(logger.warn(s"^^^ Failed: $err"))
+//      }
+//    }
+//
+//    val consume = lines.mapEval {
+//      case "d" => doSomething(_.isInstanceOf[Delete[_]])
+//      case "m" => doSomething(_.isInstanceOf[Modify[_,_]])
+//      case "c" => doSomething(_.isInstanceOf[Create[_]])
+//      case "" => doSomething(_ => true)
+//      case " " => stateValidator.flatMap(_.report(verbose = true))
+//      case other => {
+//        IO(logger.error(s"Unknown command: ${other}, try c/m/d"))
+//      }
+//    }.mapEval(_ => IO(println("\n\n\n"))).completedL
+//
+//    IO.parZip2(readLoop, consume).void
   }
 
-  private def watchResource[T](mirror: ResourceMirror[Task, T])(implicit res: ObjectResource[T], pp: PrettyPrint[T]): Task[Unit] = {
+  private def watchResource[T](mirror: ResourceMirror[IO, T])(implicit res: ObjectResource[T], pp: PrettyPrint[T]): IO[Unit] = {
     val logId = s"${res.kind}"
     mirror.all.map(_.size).flatMap { initialItems =>
       mirror.ids.drop(initialItems.toLong).evalMap { id =>
@@ -378,7 +375,7 @@ class Mutator[C](client: C, greetings: ResourceMirror[Task, Greeting], people: R
             case Some(ResourceState.Active(resource)) => pp.pretty(resource)
             case Some(ResourceState.SoftDeleted(resource)) => s"[finalizing] ${pp.pretty(resource)}"
           }
-          Task(logger.debug(s"[$logId total:${all.size}] Saw update to ${id}: ${desc}"))
+          IO(logger.debug(s"[$logId total:${all.size}] Saw update to ${id}: ${desc}"))
         }
       }.compile.drain
     }

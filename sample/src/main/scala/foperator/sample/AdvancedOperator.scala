@@ -1,6 +1,6 @@
 package foperator.sample
 
-import cats.effect.ExitCode
+import cats.effect.{IO, IOApp}
 import cats.implicits._
 import foperator._
 import foperator.backend.Skuber
@@ -9,28 +9,27 @@ import foperator.internal.Logging
 import foperator.sample.Models.Skuber._
 import foperator.sample.PrettyPrint.Implicits._
 import foperator.types.Engine
-import monix.eval.{Task, TaskApp}
 import skuber.apiextensions.CustomResourceDefinition
 
 import scala.util.Try
 
-object AdvancedOperator extends TaskApp {
+object AdvancedOperator extends IOApp.Simple {
   val finalizerName = s"AdvancedMain.${Models.apiGroup}"
 
-  override def run(args: List[String]): Task[ExitCode] = {
-    Skuber.default.use { skuber =>
-      new AdvancedOperator(skuber).run.as(ExitCode.Success)
+  override def run: IO[Unit] = {
+    Skuber[IO].default(runtime.compute).use { skuber =>
+      new AdvancedOperator(skuber).run
     }
   }
 }
 
-class AdvancedOperator[C](client: Client[Task, C])
+class AdvancedOperator[C](client: Client[IO, C])
   (implicit
     // note: this individual engine listing is only needed when you're
     // writing a client-agnostic operator (which we do use for tests)
-    engineP: Engine[Task, C, Person],
-    engineG: Engine[Task, C, Greeting],
-    engineD: Engine[Task, C, CustomResourceDefinition],
+    engineP: Engine[IO, C, Person],
+    engineG: Engine[IO, C, Greeting],
+    engineD: Engine[IO, C, CustomResourceDefinition],
   )
   extends Logging {
   import AdvancedOperator._
@@ -38,7 +37,7 @@ class AdvancedOperator[C](client: Client[Task, C])
 
   val reconcileOpts = ReconcileOptions(refreshInterval = None, concurrency = 5)
 
-  def run: Task[Unit] = {
+  def run: IO[Unit] = {
     install >>
     client[Greeting].mirror { greetings =>
       client[Person].mirror { people =>
@@ -47,11 +46,11 @@ class AdvancedOperator[C](client: Client[Task, C])
     }
   }
 
-  def runWith(greetings: ResourceMirror[Task, Greeting], people: ResourceMirror[Task, Person]): Task[Unit] = {
-    Task.parZip2(
+  def runWith(greetings: ResourceMirror[IO, Greeting], people: ResourceMirror[IO, Person]): IO[Unit] = {
+    (
       greetingController(greetings, people),
       personController(greetings, people)
-    ).void
+    ).parTupled.void
   }
 
   def install = {
@@ -76,15 +75,15 @@ class AdvancedOperator[C](client: Client[Task, C])
   // Given a greeting update, apply it to the cluster.
   // This differs from the default Operations.applyUpdate because
   // it also installs finalizers on referenced people.
-  private def greetingUpdater(peopleMirror: ResourceMirror[Task, Person])
-    (fn: Greeting => Task[GreetingStatus])
-    (implicit pp: PrettyPrint[GreetingStatus]): Greeting => Task[GreetingStatus] = { greeting =>
+  private def greetingUpdater(peopleMirror: ResourceMirror[IO, Person])
+    (fn: Greeting => IO[GreetingStatus])
+    (implicit pp: PrettyPrint[GreetingStatus]): Greeting => IO[GreetingStatus] = { greeting =>
   fn(greeting).flatMap { status =>
     logger.info(s"Reconciled greeting ${Id.of(greeting)} to status: ${pp.pretty(status)}")
     val ids = peopleIds(Id.of(greeting), status)
-    val findPeople: Task[List[Person]] = {
+    val findPeople: IO[List[Person]] = {
       peopleMirror.active.flatMap { all =>
-        ids.traverse(id => Task.fromTry(findPerson(all, id)))
+        ids.traverse(id => IO.fromTry(findPerson(all, id)))
       }
     }
 
@@ -93,8 +92,8 @@ class AdvancedOperator[C](client: Client[Task, C])
         person.metadata.finalizers.exists(list => list.contains_(finalizerName))
 
       people.filterNot(hasFinalizer) match {
-        case Nil => Task.unit
-        case nonEmpty => Task.raiseError(new RuntimeException(s"Some people don't have a finalizer installed yet: ${nonEmpty}"))
+        case Nil => IO.unit
+        case nonEmpty => IO.raiseError(new RuntimeException(s"Some people don't have a finalizer installed yet: ${nonEmpty}"))
       }
     }
 
@@ -106,9 +105,9 @@ class AdvancedOperator[C](client: Client[Task, C])
   }}
 
   private def greetingController(
-    greetingsMirror: ResourceMirror[Task, Greeting],
-    peopleMirror: ResourceMirror[Task, Person]
-  ): Task[Unit] = {
+    greetingsMirror: ResourceMirror[IO, Greeting],
+    peopleMirror: ResourceMirror[IO, Person]
+  ): IO[Unit] = {
     val input = greetingsMirror.withResourceTrigger(peopleMirror) {
       case ResourceState.SoftDeleted(person) => {
         greetingsMirror.activeValues.map(greetings => greetings.filter(references(person, _)).map(Id.of[Greeting]))
@@ -132,11 +131,11 @@ class AdvancedOperator[C](client: Client[Task, C])
       }
     }
 
-    val reconciler = Reconciler.builder[Task, C, Greeting].status(greetingUpdater(peopleMirror) { greeting =>
+    val reconciler = Reconciler.builder[IO, C, Greeting].status(greetingUpdater(peopleMirror) { greeting =>
       greeting.spec.surname match {
 
         // if there's no surname, just do what SimpleOperator does
-        case None => Task.pure(SimpleOperator.expectedStatus(greeting))
+        case None => IO.pure(SimpleOperator.expectedStatus(greeting))
 
         case Some(surname) => {
           peopleMirror.active.map { activePeople =>
@@ -161,21 +160,21 @@ class AdvancedOperator[C](client: Client[Task, C])
   }
 
   private def personController(
-    greetingsMirror: ResourceMirror[Task, Greeting],
-    peopleMirror: ResourceMirror[Task, Person]
-  ): Task[Unit] = {
+    greetingsMirror: ResourceMirror[IO, Greeting],
+    peopleMirror: ResourceMirror[IO, Person]
+  ): IO[Unit] = {
     def finalize(person: Person) = {
       // The Greetings operator will remove a person from its status soon as the person is soft-deleted,
       // but that might not be immediate. This operator just fails (and backs off) while
       // a dangling reference remains.
       greetingsMirror.active.flatMap { active =>
         if (active.values.exists(references(person, _))) {
-          Task.raiseError(new RuntimeException("Waiting for greeting references to be removed"))
-        } else Task.unit
+          IO.raiseError(new RuntimeException("Waiting for greeting references to be removed"))
+        } else IO.unit
       }
     }
 
-    val reconciler = Reconciler.builder[Task, C, Person].empty.withFinalizer(finalizerName, finalize)
+    val reconciler = Reconciler.builder[IO, C, Person].empty.withFinalizer(finalizerName, finalize)
     client[Person].runReconcilerWithInput(peopleMirror, reconciler, reconcileOpts)
   }
 }

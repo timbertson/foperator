@@ -1,17 +1,16 @@
 package foperator.sample
 
-import cats.effect.ExitCode
+import cats.effect.{ExitCode, IO, IOApp}
 import foperator.backend.Skuber
 import foperator.backend.skuber.implicits._
 import foperator.sample.Models.Skuber._
 import foperator.sample.Models._
-import monix.eval.{Task, TaskApp}
 import skuber.apiextensions.CustomResourceDefinition
 
-object SimpleOperator extends TaskApp {
-  override def run(args: List[String]): Task[ExitCode] = {
-    Skuber.default.use { skuber =>
-      new SimpleOperator(skuber).run.as(ExitCode.Success)
+object SimpleOperator extends IOApp.Simple {
+  override def run: IO[Unit] = {
+    Skuber[IO].default(runtime.compute).use { skuber =>
+      new SimpleOperator(skuber).run
     }
   }
 
@@ -20,21 +19,21 @@ object SimpleOperator extends TaskApp {
   def expectedStatus(greeting: Greeting): GreetingStatus =
     GreetingStatus(s"Hello, ${greeting.spec.name.getOrElse("UNKNOWN")}", people = Nil)
 
-  val reconciler = Skuber.Reconciler[Greeting].status { greeting =>
+  val reconciler = Skuber[IO].Reconciler[Greeting].status { greeting =>
     // Always return the expected status, Reconciler.customResourceUpdater
     // will make this a no-op without any API calls if it is unchanged.
-    Task.pure(expectedStatus(greeting))
+    IO.pure(expectedStatus(greeting))
   }
 }
 
-class SimpleOperator[C](client: Skuber) {
+class SimpleOperator[C](client: Skuber[IO]) {
   import SimpleOperator._
 
   def install = {
     client.apply[CustomResourceDefinition].forceWrite(greetingCrd).void
   }
 
-  def run: Task[ExitCode] = {
-    install >> client.apply[Greeting].runReconciler(reconciler).as(ExitCode.Success)
+  def run: IO[Unit] = {
+    install >> client.apply[Greeting].runReconciler(reconciler)
   }
 }

@@ -1,17 +1,17 @@
 package foperator.sample
 
+import cats.effect.IO
 import foperator.internal.Logging
 import foperator.sample.mutator.{MutationTestCase, MutatorTest}
-import monix.eval.Task
-import weaver.monixcompat.SimpleTaskSuite
+import weaver.SimpleIOSuite
 
-object AdvancedTest extends SimpleTaskSuite with Logging {
-  def run(seed: Long): Task[Unit] = MutatorTest.testSynthetic(MutationTestCase.withSeed(seed))
+object AdvancedTest extends SimpleIOSuite with Logging {
+  def run(seed: Long): IO[Unit] = MutatorTest.testSynthetic(MutationTestCase.withSeed(seed))
 
   test("Reaches a consistent state after every mutation") {
     val initalSeed = System.currentTimeMillis().toInt.toLong // toInt truncates to prevent overflow
-    fs2.Stream.fromIterator(Range.Long(initalSeed, initalSeed + 100, 1).iterator).evalMap { seed =>
-      run(seed) >> Task(println(s"done: ${seed}"))
+    fs2.Stream.range(initalSeed, initalSeed + 100).evalMap { seed =>
+      run(seed) >> IO(println(s"done: ${seed}"))
     }.compile.drain.as(success)
   }
 
