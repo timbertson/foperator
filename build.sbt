@@ -31,8 +31,6 @@ lazy val core = (project in file("core"))
   .settings(common)
   .settings(
     name := "foperator-core",
-    libraryDependencies ++= Seq(
-    )
   )
 
 // split out of core so that it doesn't depend on monix

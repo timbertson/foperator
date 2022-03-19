@@ -1,9 +1,8 @@
 package foperator
 
 import cats.Eq
-import cats.effect.{Async, Concurrent, Sync}
+import cats.effect.{Async, Concurrent}
 import cats.implicits._
-import cats.syntax._
 import foperator.internal.Logging
 import foperator.types._
 

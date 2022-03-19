@@ -1,7 +1,7 @@
 package foperator
 
 import cats.Monad
-import cats.effect.{Async, Concurrent, Sync}
+import cats.effect.{Async, Sync}
 import cats.implicits._
 import foperator.internal.{IORef, IOUtil, Logging}
 import foperator.types._

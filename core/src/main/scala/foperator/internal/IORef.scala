@@ -1,8 +1,8 @@
 package foperator.internal
 
 import cats.effect.std.Semaphore
+import cats.effect.{Concurrent, Ref}
 import cats.implicits._
-import cats.effect.{Concurrent, MonadCancel, Ref, Sync}
 
 // Reduced API version of cats-effect v2.x MVar, which was removed in 3.x
 trait IORef[IO[_], T] {

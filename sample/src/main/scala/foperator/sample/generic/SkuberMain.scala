@@ -1,6 +1,6 @@
 package foperator.sample.generic
 
-import cats.effect.{ExitCode, IO, IOApp}
+import cats.effect.{IO, IOApp}
 import foperator.backend.Skuber
 import foperator.backend.skuber.implicits._
 import skuber.CustomResource

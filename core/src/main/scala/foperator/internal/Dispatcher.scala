@@ -1,9 +1,8 @@
 package foperator.internal
 
+import cats.effect.kernel._
 import cats.effect.std.Semaphore
-import cats.effect._
 import cats.implicits._
-import cats.syntax._
 import foperator._
 import foperator.types.ObjectResource
 import fs2.Stream
@@ -11,13 +10,13 @@ import fs2.Stream
 // Kicks off reconcile actions for all tracked resources,
 // supporting periodic reconciles and a concurrency limit
 private[foperator] object Dispatcher extends Logging {
-  def run[IO[_]: Async, C, T: ObjectResource](
+  def run[F[_]: Async, C, T: ObjectResource](
     client: C,
-    input: ReconcileSource[IO, T],
-    reconcile: Reconciler.Fn[IO, C, T],
+    input: ReconcileSource[F, T],
+    reconcile: Reconciler.Fn[F, C, T],
     opts: ReconcileOptions,
-  ): IO[Unit] = {
-    Dispatcher.resource[IO, C, T](
+  ): F[Unit] = {
+    Dispatcher.resource[F, C, T](
       client,
       input,
       reconcile,
@@ -25,14 +24,14 @@ private[foperator] object Dispatcher extends Logging {
     ).use(identity)
   }
 
-  private [foperator] def main[IO[_], K](
-    state: IORef[IO, StateMap[IO, K]],
-    error: Deferred[IO, Throwable],
-    loop: ReconcileLoop[IO, K],
-    input: Stream[IO, K]
-  )(implicit io: Concurrent[IO]): IO[Unit] = {
-    val process: IO[Unit] = {
-      input.evalMap[IO, Unit] { id =>
+  private [foperator] def main[F[_], K](
+    state: IORef[F, StateMap[F, K]],
+    error: Deferred[F, Throwable],
+    loop: ReconcileLoop[F, K],
+    input: Stream[F, K]
+  )(implicit io: Concurrent[F]): F[Unit] = {
+    val process: F[Unit] = {
+      input.evalMap[F, Unit] { id =>
         logger.debug(s"changed: $id")
         state.modify_ { stateMap =>
           (stateMap.get(id) match {
@@ -57,24 +56,24 @@ private[foperator] object Dispatcher extends Logging {
     io.race(error.get.flatMap(io.raiseError[Unit]), process).void
   }
 
-  def resource[IO[_], C, T](
+  def resource[F[_], C, T](
     client: C,
-    input: ReconcileSource[IO, T],
-    reconcile: Reconciler.Fn[IO, C, T],
+    input: ReconcileSource[F, T],
+    reconcile: Reconciler.Fn[F, C, T],
     opts: ReconcileOptions,
 
     // used in tests:
-    stateOverride: Option[IORef[IO, StateMap[IO, Id[T]]]] = None
-  )(implicit io: Async[IO], res: ObjectResource[T]): Resource[IO, IO[Unit]] =
+    stateOverride: Option[IORef[F, StateMap[F, Id[T]]]] = None
+  )(implicit io: Async[F], res: ObjectResource[T]): Resource[F, F[Unit]] =
   {
     def retryDelay(count: ErrorCount) = opts.retryDelay(count.value)
     val acquire = for {
-      state <- stateOverride.fold(IORef[IO].of(Map.empty: StateMap[IO, Id[T]]))(io.pure)
-      error <- Deferred[IO, Throwable]
-      semaphore <- Semaphore[IO](opts.concurrency.toLong)
+      state <- stateOverride.fold(IORef[F].of(Map.empty: StateMap[F, Id[T]]))(io.pure)
+      error <- Deferred[F, Throwable]
+      semaphore <- Semaphore[F](opts.concurrency.toLong)
     } yield {
       val updater = new Updater(state)
-      def action(id: Id[T]): IO[Option[ReconcileResult]] = semaphore.permit.use { _ =>
+      def action(id: Id[T]): F[Option[ReconcileResult]] = semaphore.permit.use { _ =>
         input.get(id).flatMap {
           case None => io.pure(None)
           case Some(r) => for {
@@ -84,7 +83,7 @@ private[foperator] object Dispatcher extends Logging {
         }
       }
 
-      val resourceLoop = new ReconcileLoop.Impl[IO, Id[T]](action, updater, retryDelay)
+      val resourceLoop = new ReconcileLoop.Impl[F, Id[T]](action, updater, retryDelay)
       val run = io.delay(logger.info("[{}] Starting reconciler", res.kind)) >> main(state, error, resourceLoop, input.ids)
       (run, cancel(state))
     }
@@ -93,28 +92,28 @@ private[foperator] object Dispatcher extends Logging {
 
   // NewState is State plus the Terminate option, which
   // removes this resource from being tracked
-  sealed trait NewState[+IO[_]]
+  sealed trait NewState[+F[_]]
   case object Terminate extends NewState[Nothing]
 
-  sealed trait State[+IO[_]] extends NewState[IO]
+  sealed trait State[+F[_]] extends NewState[F]
   case object Reconciling extends State[Nothing] with NewState[Nothing]
   case object Dirty extends State[Nothing] with NewState[Nothing]
-  case class Waiting[IO[_]](wakeup: IO[Unit]) extends State[IO]
+  case class Waiting[F[_]](wakeup: F[Unit]) extends State[F]
 
   // updater for an individual resource
-  trait StateUpdater[IO[_], K] {
-    def apply[T](key: K, fn: State[IO] => IO[(NewState[IO], T)]): IO[T]
+  trait StateUpdater[F[_], K] {
+    def apply[T](key: K, fn: State[F] => F[(NewState[F], T)]): F[T]
   }
 
   // dispatcher state
-  type StateMap[IO[_], K] = Map[K, (State[IO], Fiber[IO, Throwable, Unit])]
+  type StateMap[F[_], K] = Map[K, (State[F], Fiber[F, Throwable, Unit])]
 
 
   // adapt the full dispatcher state to provide an individual updater
-  private [foperator] class Updater[IO[_], K](state: IORef[IO, StateMap[IO, K]])
-    (implicit io: Concurrent[IO]) extends StateUpdater[IO, K]
+  private [foperator] class Updater[F[_], K](state: IORef[F, StateMap[F, K]])
+    (implicit io: Concurrent[F]) extends StateUpdater[F, K]
   {
-    override def apply[T](key: K, fn: State[IO] => IO[(NewState[IO], T)]): IO[T] = {
+    override def apply[T](key: K, fn: State[F] => F[(NewState[F], T)]): F[T] = {
       state.modify[T] { stateMap =>
         stateMap.get(key) match {
           case None => io.raiseError(new RuntimeException(s"state ${key} missing from dispatcher map"))
@@ -127,7 +126,7 @@ private[foperator] object Dispatcher extends Logging {
                 logger.debug("State ({}): {} -> {}", key, current, Terminate)
                 (stateMap.removed(key), ret)
               }
-              case (newState: State[IO], ret) => {
+              case (newState: State[F], ret) => {
                 logger.debug("State ({}): {} -> {}", key, current, newState)
                 (stateMap.updated(key, (newState, fiber)), ret)
               }
@@ -138,7 +137,7 @@ private[foperator] object Dispatcher extends Logging {
     }
   }
 
-  private def cancel[IO[_], K](state: IORef[IO, StateMap[IO, K]])(implicit io: Concurrent[IO], res: ObjectResource[_]): IO[Unit] = {
+  private def cancel[F[_], K](state: IORef[F, StateMap[F, K]])(implicit io: Concurrent[F], res: ObjectResource[_]): F[Unit] = {
     state.readLast.flatMap { stateMap =>
       logger.info("[{}] Cancelling dispatcher loop ({} active fibers)", res.kind, stateMap.size)
       val fibers = stateMap.values.map(_._2).toList

@@ -1,7 +1,6 @@
 package foperator.sample.generic
 
 import cats.effect.{Async, IO, IOApp}
-import cats.effect.implicits._
 import com.goyeau.kubernetes.client.crd.CustomResource
 import foperator.backend.KubernetesClient
 import foperator.backend.kubernetesclient.implicits._

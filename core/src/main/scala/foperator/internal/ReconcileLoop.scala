@@ -1,10 +1,9 @@
 package foperator.internal
 
+import cats.effect.{Async, Deferred}
 import cats.implicits._
-import cats.effect.{Async, Concurrent, Deferred}
-import cats.effect.kernel.Temporal
 import foperator.ReconcileResult
-import foperator.internal.Dispatcher.{Dirty, Reconciling, State, StateUpdater, Terminate, Waiting}
+import foperator.internal.Dispatcher._
 
 import scala.concurrent.duration.FiniteDuration
 import scala.util.{Failure, Success}

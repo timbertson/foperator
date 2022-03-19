@@ -1,7 +1,7 @@
 package foperator.internal
 
 import cats.MonadError
-import cats.effect.{Async, Concurrent, Fiber, Outcome, Sync}
+import cats.effect.{Async, Fiber, Outcome}
 import cats.implicits._
 
 import scala.concurrent.Future
@@ -20,7 +20,7 @@ private[foperator] object IOUtil extends Logging {
           logger.debug("block ended; cancelled background task")
           io.pure(r)
         }
-        case _: Left[T, _] => io.raiseError(new RuntimeException("consumption terminated prematurely"))
+        case _: Left[_, _] => io.raiseError(new RuntimeException("consumption terminated prematurely"))
       }
     } yield result
   }

@@ -1,10 +1,8 @@
 package foperator
 
-import cats.effect.Ref
 import cats.effect.testkit.TestControl
-import cats.effect.{Deferred, IO}
+import cats.effect.{Deferred, IO, Ref}
 import cats.implicits._
-import cats.syntax._
 import foperator.fixture.Resource
 import foperator.internal.Logging
 import foperator.testkit.{TestClient, TestClientEngineImpl}

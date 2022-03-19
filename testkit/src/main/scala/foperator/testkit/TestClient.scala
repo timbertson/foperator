@@ -53,8 +53,8 @@ object TestClient {
   private [testkit] type State = Map[ResourceKey, Any]
   private [testkit] type Entry = (ResourceKey, Any)
 
-  class Companion[IO[_]] extends Client.Companion[IO, TestClient[IO]] {
-    def client(implicit io: Async[IO]): IO[TestClient[IO]] = {
+  class Companion[IO[_]](implicit io: Async[IO]) extends Client.Companion[IO, TestClient[IO]] {
+    def client: IO[TestClient[IO]] = {
       for {
         state <- IORef[IO].of(Map.empty: State)
         topic <- Topic[IO, Event[(ResourceKey, Any)]]
@@ -65,7 +65,7 @@ object TestClient {
   def apply[IO[_]](implicit io: Async[IO]): Companion[IO] = new Companion[IO]
 
   implicit def implicitEngine[IO[_], T]
-    (implicit io: Async[IO], clock: Clock[IO], res: ObjectResource[T], eq: Eq[T])
+    (implicit io: Async[IO], res: ObjectResource[T], eq: Eq[T])
   : foperator.types.Engine[IO, TestClient[IO], T]
   = new TestClientEngineImpl[IO, T]
 

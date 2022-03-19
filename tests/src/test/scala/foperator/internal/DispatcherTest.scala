@@ -3,18 +3,17 @@ package foperator.internal
 import cats.Eq
 import cats.effect.kernel.Outcome
 import cats.effect.testkit.TestControl
-import cats.effect.{Deferred, Fiber, IO}
+import cats.effect.{Deferred, IO}
 import cats.implicits._
+import foperator._
 import foperator.fixture.{Resource, ResourceSpec, ResourceStatus, resource}
 import foperator.internal.Dispatcher.StateMap
 import foperator.testkit.TestClient
-import foperator._
 import fs2.Stream
 import net.gfxmonk.auditspec.Audit
 import weaver.Expectations
 
 import scala.concurrent.duration._
-import scala.util.Failure
 
 object DispatcherTest extends SimpleTimedIOSuite with Logging {
 
@@ -175,7 +174,6 @@ object DispatcherTest extends SimpleTimedIOSuite with Logging {
   timedTest("skips intermediate updates while busy") {
     // takes 10s to reconcile, updates at 0, 2, 4, 6, 8s. two reconciles of states 0, n
     var logResource: Resource => IO[Unit] = _ => IO.unit
-    val startDelay = 1.second
     execute(reconcile = { res =>
       logResource(res) >> IO.sleep(10.seconds).as(ReconcileResult.Ok)
     }) { ctx =>

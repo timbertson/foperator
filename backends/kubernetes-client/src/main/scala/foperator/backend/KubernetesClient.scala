@@ -1,7 +1,7 @@
 package foperator.backend
 
-import cats.{Eq, MonadError}
-import cats.effect.{Async, Concurrent, Deferred, Resource}
+import cats.Eq
+import cats.effect.{Async, Deferred, Resource}
 import cats.implicits._
 import com.goyeau.kubernetes.client
 import com.goyeau.kubernetes.client.foperatorext.Types._
