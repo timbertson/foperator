@@ -24,7 +24,7 @@ import scala.concurrent.duration._
 import scala.language.reflectiveCalls
 
 class KubernetesClient[IO[_] : Async](val underlying: client.KubernetesClient[IO])
-extends Client[IO, KubernetesClient[IO]] {
+  extends Client[IO, KubernetesClient[IO]] {
   override def apply[T]
     (implicit e: Engine[IO, KubernetesClient[IO], T], res: ObjectResource[T]): Operations[IO, KubernetesClient[IO], T]
     = new Operations[IO, KubernetesClient[IO], T](this)

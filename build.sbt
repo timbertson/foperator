@@ -54,10 +54,10 @@ lazy val tests = (project in file("tests"))
     name := "foperator-tests",
     libraryDependencies ++= Seq(
       logback,
+      "co.fs2" %% "fs2-io" % fs2Version,
       "net.gfxmonk" %% "auditspec" % "0.3.0" % "test",
-    )
-  )
-  .settings(weaverSettings)
+    ),
+  ).settings(weaverSettings)
   .dependsOn(core, testkit)
 
 // skuber backend

@@ -1,22 +1,23 @@
 package foperator.sample.mutator
 
 import cats.Eq
-import cats.effect.{ExitCode, IO, IOApp}
+import cats.effect.{IO, IOApp}
 import cats.implicits._
 import foperator._
 import foperator.backend.Skuber
 import foperator.backend.skuber.implicits._
 import foperator.internal.Logging
-import foperator.sample.Models.{GreetingSpec, PersonSpec}
 import foperator.sample.Models.Skuber._
+import foperator.sample.Models.{GreetingSpec, PersonSpec}
 import foperator.sample.PrettyPrint.Implicits._
 import foperator.sample.{AdvancedOperator, PrettyPrint, SimpleOperator}
 import foperator.types.{Engine, ObjectResource}
+import fs2.{Stream, text}
 import skuber.CustomResource
 
 import java.util.concurrent.TimeUnit
 import scala.concurrent.duration.FiniteDuration
-import scala.util.{Failure, Random, Success}
+import scala.util.Random
 
 object Simple extends IOApp.Simple with Logging {
   override def run: IO[Unit] = {
@@ -314,55 +315,38 @@ class Mutator[C](client: C, greetings: ResourceMirror[IO, Greeting], people: Res
   }
 
   def runRepl: IO[Unit] = {
-    ???
-//    // TODO figure out a less terrible solution: https://github.com/monix/monix/issues/1242
-//    val globalScheduler = Scheduler.global
-//    val threadScheduler = Scheduler.singleThread("stdin", daemonic = true)
-//    val getThread = IO {
-//      Thread.currentThread
-//    }.executeOn(threadScheduler)
-//
-//    val lines = ConcurrentSubject[String](MulticastStrategy.publish)(globalScheduler)
-//    val readLoop = getThread.flatMap { thread =>
-//      IO {
-//        logger.info("--- ready (press return to mutate) ---")
-//        while(true) {
-//          scala.io.Source.stdin.getLines().foreach { line =>
-//            lines.onNext(line)
-//          }
-//          lines.onComplete()
-//        }
-//      }.executeOn(threadScheduler).doOnCancel(IO {
-//        println("Cancelling ...")
-//        thread.interrupt()
-//      }.executeOn(globalScheduler))
-//    }
-//
-//    def doSomething(filter: Action => Boolean): IO[Unit] = {
-//      nextAction(Random, filter).flatMap { action =>
-//        logger.info(s"Running: ${prettyPrintAction.pretty(action)}")
-//        action.run.attempt
-//      }.flatMap {
-//        case Right(_) => {
-//          IO.sleep(FiniteDuration(200, TimeUnit.MILLISECONDS)) >>
-//            stateValidator.flatMap(_.report(verbose = false))
-//        }
-//        case Left(err) => IO(logger.warn(s"^^^ Failed: $err"))
-//      }
-//    }
-//
-//    val consume = lines.mapEval {
-//      case "d" => doSomething(_.isInstanceOf[Delete[_]])
-//      case "m" => doSomething(_.isInstanceOf[Modify[_,_]])
-//      case "c" => doSomething(_.isInstanceOf[Create[_]])
-//      case "" => doSomething(_ => true)
-//      case " " => stateValidator.flatMap(_.report(verbose = true))
-//      case other => {
-//        IO(logger.error(s"Unknown command: ${other}, try c/m/d"))
-//      }
-//    }.mapEval(_ => IO(println("\n\n\n"))).completedL
-//
-//    IO.parZip2(readLoop, consume).void
+    def doSomething(filter: Action => Boolean): IO[Unit] = {
+      nextAction(Random, filter).flatMap { action =>
+        logger.info(s"Running: ${prettyPrintAction.pretty(action)}")
+        action.run.attempt
+      }.flatMap {
+        case Right(_) => {
+          IO.sleep(FiniteDuration(200, TimeUnit.MILLISECONDS)) >>
+            stateValidator.flatMap(_.report(verbose = false))
+        }
+        case Left(err) => IO(logger.warn(s"^^^ Failed: $err"))
+      }
+    }
+
+    // for some insane reason it's impossible to interrupt stdin.read,
+    // so just burn down the world and hope nothing else was running :shrug:
+    // See https://github.com/monix/monix/issues/1242
+    val killOnCancel = IO.never.onCancel(IO(Runtime.getRuntime.halt(1)))
+
+    val prompt = IO(logger.info("--- ready (press return to mutate) ---"))
+    val lines = fs2.io.stdin[IO](1).through(text.utf8.decode).through(text.lines)
+
+    val consume = Stream.repeatEval(prompt).interleave(
+      lines.evalMap {
+        case "d" => doSomething(_.isInstanceOf[Delete[_]])
+        case "m" => doSomething(_.isInstanceOf[Modify[_,_]])
+        case "c" => doSomething(_.isInstanceOf[Create[_]])
+        case "" => doSomething(_ => true)
+        case " " => stateValidator.flatMap(_.report(verbose = true))
+        case other => IO(logger.error(s"Unknown command: ${other}, try c/m/d"))
+      }.evalMap(_ => IO(println("\n\n\n")))
+    ).compile.drain
+    List(killOnCancel, consume).parSequence_
   }
 
   private def watchResource[T](mirror: ResourceMirror[IO, T])(implicit res: ObjectResource[T], pp: PrettyPrint[T]): IO[Unit] = {

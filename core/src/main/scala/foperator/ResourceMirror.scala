@@ -5,7 +5,8 @@ import cats.effect.{Async, Concurrent, Sync}
 import cats.implicits._
 import foperator.internal.{IORef, IOUtil, Logging}
 import foperator.types._
-import fs2.{BroadcastTopic, Chunk, Stream}
+import fs2.concurrent.Topic
+import fs2.{Chunk, Stream}
 
 /**
  * ResourceMirror provides:
@@ -53,7 +54,7 @@ object ResourceMirror extends Logging {
       )
       state <- IORef[IO].of(initial.map(obj => res.id(obj) -> ResourceState.of(obj)).toMap)
       trackedUpdates = trackState(state, updates).map(e => res.id(e.raw))
-      topic <- BroadcastTopic[IO, Id[T]]
+      topic <- Topic[IO, Id[T]]
       consume = trackedUpdates.through(topic.publish).compile.drain
       ids = injectInitial(state.readLast.map(_.keys.toList), topic)
       impl = new Impl(state, ids)
@@ -61,7 +62,7 @@ object ResourceMirror extends Logging {
     } yield result
   }
 
-  private def injectInitial[IO[_], T](initial: IO[List[T]], topic: BroadcastTopic[IO, T])(implicit io: Sync[IO]): Stream[IO, T] = {
+  private def injectInitial[IO[_], T](initial: IO[List[T]], topic: Topic[IO, T])(implicit io: Sync[IO]): Stream[IO, T] = {
     Stream.resource(topic.subscribeAwait(1)).flatMap { updates =>
       // first emit initial IDs, then follow with updates
       Stream.evalUnChunk(io.map(initial) { items =>

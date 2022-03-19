@@ -50,21 +50,12 @@ object Skuber {
     }
 
     def actorSystem(config: Config, scheduler: ExecutionContext): Resource[IO, ActorSystem] = {
-      val schedulerImpl = ???
-//      scheduler match {
-//        case _: TestScheduler => {
-//          // Akka is rife with Await.result() calls, which completely breaks any attempt to use a synthetic
-//          // scheduler. This seems like the least broken alternative.
-//          ExecutionContext.parasitic
-//        }
-//        case other => other
-//      }
       Resource.make(io.delay {
         ActorSystem(
           name = "foperatorActorSystem",
           config = Some(overrideConfig(config)),
           classLoader = None,
-          defaultExecutionContext = Some[ExecutionContext](schedulerImpl)
+          defaultExecutionContext = Some[ExecutionContext](scheduler)
         )
       })(sys => IOUtil.deferFuture(sys.terminate()).void)
     }

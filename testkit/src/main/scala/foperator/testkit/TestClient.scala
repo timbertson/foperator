@@ -6,14 +6,13 @@ import cats.implicits._
 import foperator._
 import foperator.internal.{IORef, Logging}
 import foperator.types._
-import fs2.BroadcastTopic
+import fs2.concurrent.Topic
 
 import java.time.Instant
-import java.util.concurrent.TimeUnit
 
 class TestClient[IO[_]](
   state: IORef[IO, TestClient.State],
-  val topic: BroadcastTopic[IO, Event[TestClient.Entry]],
+  val topic: Topic[IO, Event[TestClient.Entry]],
   val auditors: List[Event[TestClient.Entry] => IO[Unit]],
 )(implicit io: Async[IO]) extends Client[IO, TestClient[IO]] with Logging {
 
@@ -58,7 +57,7 @@ object TestClient {
     def client(implicit io: Async[IO]): IO[TestClient[IO]] = {
       for {
         state <- IORef[IO].of(Map.empty: State)
-        topic <- BroadcastTopic[IO, Event[(ResourceKey, Any)]]
+        topic <- Topic[IO, Event[(ResourceKey, Any)]]
       } yield new TestClient[IO](state, topic, Nil)
     }
   }
