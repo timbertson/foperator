@@ -16,11 +16,13 @@ private[foperator] object IOUtil extends Logging {
       f: Fiber[IO, Throwable, Nothing] = fiber
       either <- io.guarantee(io.race[Outcome[IO, Throwable, Nothing], T](f.join, fg), f.cancel)
       result <- either match {
-        case Right(r) => {
+        case Right(fg) => {
           logger.debug("block ended; cancelled background task")
-          io.pure(r)
+          io.pure(fg)
         }
-        case _: Left[_, _] => io.raiseError(new RuntimeException("consumption terminated prematurely"))
+        case Left(Outcome.Errored(err)) => io.raiseError(err)
+        case Left(_: Outcome.Succeeded[IO, Throwable, Nothing]) => io.raiseError(new RuntimeException(s"background task succeeded, impossible"))
+        case Left(Outcome.Canceled()) => io.raiseError(new RuntimeException(s"background task canceled"))
       }
     } yield result
   }

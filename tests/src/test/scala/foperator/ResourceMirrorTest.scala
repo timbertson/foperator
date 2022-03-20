@@ -1,5 +1,6 @@
 package foperator
 
+import cats.effect.kernel.Outcome
 import cats.effect.testkit.TestControl
 import cats.effect.{Deferred, IO, Ref}
 import cats.implicits._
@@ -46,10 +47,13 @@ object ResourceMirrorTest extends SimpleTimedIOSuite with Logging {
 
       // Then trigger an error, and our fiber should fail:
       _ <- engine.error.complete(error)
-      result <- fiber.join.attempt
+      result <- fiber.join
     } yield {
-      // getCause because operational failures are wrapped in a descriptive exception
-      expect(result.left.toOption.map(_.getCause) == Some(error))
+      result match {
+        // getCause because operational failures are wrapped in a descriptive exception
+        case Outcome.Errored(t) => expect(t.getCause == error)
+        case other => failure(s"unexpected outcome: $other")
+      }
     }
   }
 
