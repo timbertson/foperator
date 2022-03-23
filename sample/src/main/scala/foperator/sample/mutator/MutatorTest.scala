@@ -1,6 +1,7 @@
 package foperator.sample.mutator
 
 import cats.data.Validated
+import cats.effect.testkit.TestControl
 import cats.effect.{ExitCode, IO, IOApp}
 import cats.implicits._
 import foperator.backend.Skuber
@@ -63,16 +64,16 @@ object MutatorTest extends IOApp with Logging {
 
   // Runs a test case against a fake k8s client
   def testSynthetic(params: MutationTestCase): IO[Unit] = {
-    TestClient[IO].client.flatMap { client =>
+    TestControl.executeEmbed(TestClient[IO].client.flatMap { client =>
 
       def checkMirrorContents(greetings: ResourceMirror[IO, Greeting], people: ResourceMirror[IO, Person]): IO[Unit] = {
         // To detect issues with the mirror machinery, this compares the mirror's
-        // view of the world matches the state pulled directly from FoperatorDriver.
+        // view of the world matches the state pulled directly from the TestClient stub.
         def check[O<:ObjectResource](fromMirror: Iterable[ResourceState[O]], fromClient: Iterable[ResourceState[O]]) = {
+          val clientSorted = fromClient.toList.sortBy(_.raw.name)
           val mirrorSorted = fromMirror.toList.sortBy(_.raw.name)
-          val driverSorted = fromClient.toList.sortBy(_.raw.name)
-          if (mirrorSorted != driverSorted) {
-            IO.raiseError(new AssertionError(s"Mismatch:\nclient contains:\n  ${driverSorted.mkString("\n  ")}\n\nmirror contains:\n  ${mirrorSorted.mkString("\n  ")}"))
+          if (mirrorSorted != clientSorted) {
+            IO.raiseError(new AssertionError(s"Mismatch:\nclient contains:\n  ${clientSorted.mkString("\n  ")}\n\nmirror contains:\n  ${mirrorSorted.mkString("\n  ")}"))
           } else IO.unit
         }
 
@@ -87,7 +88,8 @@ object MutatorTest extends IOApp with Logging {
         } yield ()
       }
 
-      val tick = IO.sleep(1.milli)
+      // This is only a good check when retries are disabled, since otherwise periodic reconciles may paper over issues.
+      val tick = IO.sleep(10.minutes)
 
       def tickAndValidate(mutator: Mutator[TestClient[IO]], greetings: ResourceMirror[IO, Greeting], people: ResourceMirror[IO, Person]): IO[Unit] = for {
         _ <- IO(logger.info(s"Ticking..."))
@@ -102,16 +104,16 @@ object MutatorTest extends IOApp with Logging {
         client.apply[Person].mirror { people =>
           for {
             fiber <- new AdvancedOperator(client).runWith(greetings, people).start
+            _ <- tick
             mutator = new Mutator(client, greetings, people)
-            _ <- runWithValidation(params, mutator,
+            _ <- IO.race(runWithValidation(params, mutator,
               main = fiber.joinWithNever,
               tickAndValidate = tickAndValidate(mutator, greetings, people),
-            )
-            _ <- fiber.join
+            ), fiber.join)
           } yield ()
         }
       }
-    }
+    })
   }
 
   def testLive(params: MutationTestCase, client: Skuber[IO]): IO[Unit] = {

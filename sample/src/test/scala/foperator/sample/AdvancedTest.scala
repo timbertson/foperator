@@ -16,6 +16,6 @@ object AdvancedTest extends SimpleIOSuite with Logging {
   }
 
 //  test("specific seed") { // used for debugging a specific failure
-//    run(765000891L)
+//    run(-1514271708L).as(success)
 //  }
 }
