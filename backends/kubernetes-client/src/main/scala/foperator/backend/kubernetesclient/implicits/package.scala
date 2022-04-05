@@ -8,6 +8,7 @@ import com.goyeau.kubernetes.client.crd.{CustomResource, CustomResourceList}
 import foperator.Id
 import foperator.types.HasSpec
 import io.circe.{Decoder, Encoder}
+import io.k8s.api.apps.v1._
 import io.k8s.api.core.v1.{Pod, PodList, PodStatus}
 import io.k8s.apiextensionsapiserver.pkg.apis.apiextensions.v1.{CustomResourceDefinition, CustomResourceDefinitionList, CustomResourceDefinitionStatus}
 import io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
@@ -26,14 +27,6 @@ package object implicits {
     (_, _, _) => io.raiseError(new RuntimeException(
       s"resource ${ct.getClass.getSimpleName} does not have a status sub-resource. " +
       "(if it should, please update kubernetesclientoperator.implicits to expose it)")
-    )
-
-  implicit def implicitPodResource[IO[_]: Async]: ResourceImpl[IO, PodStatus, Pod, PodList] =
-    new ResourceImpl[IO, PodStatus, Pod, PodList](
-      (c, ns) => c.pods.namespace(ns),
-      (o, m) => o.copy(metadata=Some(m)),
-      (o, s) => o.copy(status=Some(s)),
-      cantUpdateStatus[IO, Pod]
     )
 
   implicit def implicitCustomResourceResource[IO[_], Sp : Encoder: Decoder, St: Encoder: Decoder]
@@ -64,6 +57,22 @@ package object implicits {
     (o, s) => o.copy(status=Some(s)),
     cantUpdateStatus[IO, CustomResourceDefinition]
   )
+
+  implicit def implicitPodResource[IO[_]: Async]: ResourceImpl[IO, PodStatus, Pod, PodList] =
+    new ResourceImpl[IO, PodStatus, Pod, PodList](
+      (c, ns) => c.pods.namespace(ns),
+      (o, m) => o.copy(metadata=Some(m)),
+      (o, s) => o.copy(status=Some(s)),
+      cantUpdateStatus[IO, Pod]
+    )
+
+  implicit def implicitDeploymentResource[IO[_]: Async]: ResourceImpl[IO, DeploymentStatus, Deployment, DeploymentList] =
+    new ResourceImpl[IO, DeploymentStatus, Deployment, DeploymentList](
+      (c, ns) => c.deployments.namespace(ns),
+      (o, m) => o.copy(metadata=Some(m)),
+      (o, s) => o.copy(status=Some(s)),
+      cantUpdateStatus[IO, Deployment]
+    )
 
   // TODO remaining builtin types
 }
