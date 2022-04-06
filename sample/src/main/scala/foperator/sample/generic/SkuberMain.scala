@@ -1,17 +1,16 @@
 package foperator.sample.generic
 
-import cats.effect.ExitCode
+import cats.effect.{IO, IOApp}
 import foperator.backend.Skuber
 import foperator.backend.skuber.implicits._
-import monix.eval.{Task, TaskApp}
 import skuber.CustomResource
 import skuber.apiextensions.CustomResourceDefinition
 
-object SkuberMain extends TaskApp {
-  override def run(args: List[String]): Task[ExitCode] = {
+object SkuberMain extends IOApp.Simple {
+  override def run: IO[Unit] = {
     import foperator.sample.Models.Skuber._
-    Skuber.default.use { skuber =>
-      new GenericOperator[Task, Skuber, CustomResourceDefinition, CustomResource](skuber, greetingCrd ).run
-    }.as(ExitCode.Success)
+    Skuber[IO].default().use { skuber =>
+      new GenericOperator[IO, Skuber[IO], CustomResourceDefinition, CustomResource](skuber, greetingCrd ).run
+    }
   }
 }

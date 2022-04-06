@@ -1,8 +1,8 @@
 package foperator.sample.mutator
 
 import cats.data.{NonEmptyList, Validated, ValidatedNel}
+import cats.effect.IO
 import cats.implicits._
-import monix.eval.Task
 import foperator.internal.Logging
 import foperator.sample.Models.Skuber._
 import foperator.sample.PrettyPrint.Implicits._
@@ -13,7 +13,7 @@ import foperator.backend.skuber.implicits._
 class StateValidator(people: Map[String, ResourceState[Person]], greetings: Map[String, ResourceState[Greeting]]) extends Logging {
   case class ValidationError(context: List[String], errors: List[String])
 
-  def dumpState(implicit ppGreeting: PrettyPrint[ResourceState[Greeting]], ppPerson: PrettyPrint[ResourceState[Person]]) = Task {
+  def dumpState(implicit ppGreeting: PrettyPrint[ResourceState[Greeting]], ppPerson: PrettyPrint[ResourceState[Person]]) = IO {
     people.values.toList.sortBy(_.raw.name).foreach { person =>
       logger.info(ppPerson.pretty(person))
     }
@@ -88,10 +88,10 @@ class StateValidator(people: Map[String, ResourceState[Person]], greetings: Map[
   def report(verbose: Boolean) = {
     validate match {
       case Validated.Valid(_) => {
-        if (verbose) dumpState else Task.unit
+        if (verbose) dumpState else IO.unit
       }
       case Validated.Invalid(errors) => {
-        dumpState >> Task {
+        dumpState >> IO {
           errors.toList.foreach(logger.error)
         }
       }

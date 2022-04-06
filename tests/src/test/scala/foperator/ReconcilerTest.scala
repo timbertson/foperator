@@ -1,39 +1,39 @@
 package foperator
 
 import cats.Eq
+import cats.effect.IO
 import cats.implicits._
 import foperator.ResourceState.{Active, SoftDeleted}
 import foperator.fixture._
 import foperator.testkit.TestClient
-import monix.eval.Task
 import net.gfxmonk.auditspec._
-import weaver.monixcompat.SimpleTaskSuite
+import weaver.SimpleIOSuite
 
-trait ReconcilerTest { self: SimpleTaskSuite =>
+trait ReconcilerTest { self: SimpleIOSuite =>
   import ReconcilerTest._
 
   def reconcile(
     desc: String,
     resource: ResourceState[Resource],
     actions: List[Interaction],
-    finalizeResult: Task[Unit] = Task.unit,
-    wrapReconciler: (Audit[Interaction], Reconciler[Task, TestClient[Task], Resource]) => Reconciler[Task, TestClient[Task], Resource] = (_, r) => r
+    finalizeResult: IO[Unit] = IO.unit,
+    wrapReconciler: (Audit[IO, Interaction], Reconciler[IO, TestClient[IO], Resource]) => Reconciler[IO, TestClient[IO], Resource] = (_, r) => r
   ) = test(desc) {
-    Audit.resource[Interaction].use { audit =>
-      val reconciler = wrapReconciler(audit, TestClient.Reconciler[Resource]
+    Audit.resource[IO, Interaction].use { audit =>
+      val reconciler = wrapReconciler(audit, TestClient[IO].Reconciler[Resource]
         .run(_ => audit.record(Reconcile))
         .withFinalizer(NAME, _ => audit.record(Finalize) >> finalizeResult))
       for {
-        baseClient <- TestClient[Task]
+        baseClient <- TestClient[IO].client
         auditedClient = baseClient.withAudit[Resource] {
           case Event.Updated(r) => audit.record(SetFinalizers(r.meta.finalizers))
-          case Event.Deleted(_) => Task.unit
+          case Event.Deleted(_) => IO.unit
         }
         // reconcile always runs on a persisted resource (i.e. it updates, never creates) so make sure
         // the resource is persisted
         writtenOpt <- baseClient[Resource].write(resource.raw) >> baseClient[Resource].get(Id.of(resource.raw))
         written = ResourceState.map(resource, (_: Resource) => writtenOpt.get)
-        _ <- reconciler.reconcile(auditedClient, written).onErrorHandleWith { error =>
+        _ <- reconciler.reconcile(auditedClient, written).onError { error =>
           audit.record(ReconcileFailed(error.getMessage))
         }
         log <- audit.get
@@ -52,7 +52,7 @@ object ReconcilerTest {
   val NAME = "finalizerName"
   implicit val eq: Eq[Interaction] = Eq.fromUniversalEquals
 
-  object ActiveResources extends SimpleTaskSuite with ReconcilerTest {
+  object ActiveResources extends SimpleIOSuite with ReconcilerTest {
     reconcile("adds the finalizer if empty",
       resource = Active(Resource.fixture),
       actions = List(SetFinalizers(List(NAME))))
@@ -67,7 +67,7 @@ object ReconcilerTest {
     )
   }
 
-  object SoftDeletedResources extends SimpleTaskSuite with ReconcilerTest {
+  object SoftDeletedResources extends SimpleIOSuite with ReconcilerTest {
     reconcile("calls finalize then removes the finalizer",
       resource = SoftDeleted(ResourceState.addFinalizer(Resource.fixture, NAME).get),
       actions = List(Finalize, SetFinalizers(Nil))
@@ -75,7 +75,7 @@ object ReconcilerTest {
 
     reconcile("does not remove finalizer if finalize fails",
       resource = SoftDeleted(ResourceState.addFinalizer(Resource.fixture, NAME).get),
-      finalizeResult = Task.raiseError(new RuntimeException("couldn't finalize")),
+      finalizeResult = IO.raiseError(new RuntimeException("couldn't finalize")),
       actions = List(Finalize, ReconcileFailed("couldn't finalize"))
     )
 

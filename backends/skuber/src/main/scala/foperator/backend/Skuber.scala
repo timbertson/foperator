@@ -7,53 +7,64 @@ import _root_.skuber.{HasStatusSubresource, LabelSelector, ResourceDefinition}
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Sink
 import cats.data.NonEmptyList
-import cats.effect.Resource
+import cats.effect.{Async, Resource}
+import cats.implicits._
 import com.typesafe.config.{Config, ConfigFactory}
 import foperator._
-import foperator.internal.Logging
+import foperator.internal.{IOUtil, Logging}
 import foperator.types._
 import fs2.interop.reactivestreams._
-import monix.eval.Task
-import monix.eval.instances.CatsConcurrentEffectForTask
-import monix.execution.Scheduler
-import monix.execution.schedulers.TestScheduler
 import play.api.libs.json.Format
 
+import scala.jdk.CollectionConverters._
 import java.nio.file.Paths
 import scala.concurrent.ExecutionContext
 
-class Skuber
-  (val underlying: KubernetesClient, val scheduler: Scheduler, val actorSystem: ActorSystem)
-  extends Client[Task, Skuber] {
+class Skuber[IO[_]]
+  (val underlying: KubernetesClient, val actorSystem: ActorSystem)
+    (implicit io: Async[IO])
+  extends Client[IO, Skuber[IO]] {
   override def apply[T]
-    (implicit e: Engine[Task, Skuber, T], res: ObjectResource[T]): Operations[Task, Skuber, T]
-    = new Operations[Task, Skuber, T](this)
+    (implicit e: Engine[IO, Skuber[IO], T], res: ObjectResource[T]): Operations[IO, Skuber[IO], T]
+    = new Operations[IO, Skuber[IO], T](this)
 }
 
-object Skuber extends Client.Companion[Task, Skuber] {
-  import scala.jdk.CollectionConverters._
+object Skuber {
+  def apply[IO[_]: Async] = new Companion[IO]
 
-  implicit def engine[T<:skuber.ObjectResource]
-    (implicit rd: skuber.ResourceDefinition[T], fmt: Format[T])
-    : EngineFor[T]
-    = new EngineImpl[T]
+  class Companion[IO[_]](implicit io: Async[IO]) extends Client.Companion[IO, Skuber[IO]] {
+    def wrap(client: KubernetesClient, actorSystem: ActorSystem): Skuber[IO] =
+      new Skuber(client, actorSystem)
 
-  def wrap(client: KubernetesClient, scheduler: Scheduler, actorSystem: ActorSystem): Skuber
-    = new Skuber(client, scheduler, actorSystem)
+    def default(executionContext: ExecutionContext = ExecutionContext.global): Resource[IO, Skuber[IO]] = {
+      for {
+        config <- Resource.eval(io.delay(ConfigFactory.load()))
+        actorSystem <- actorSystem(config, executionContext)
+        configPath <- Resource.eval(KubeconfigPath.fromEnv[IO])
+        k8sConfig <- Resource.eval(io.fromTry(skuber.api.Configuration.parseKubeconfigFile(Paths.get(configPath))))
+        client <- Resource.make(io.delay {
+          val client = skuber.api.client.init(k8sConfig.currentContext, LoggingConfig())(actorSystem)
+          new Skuber(client, actorSystem)
+        })(skuber => io.delay(skuber.underlying.close))
+      } yield client
+    }
 
-  def default: Resource[Task, Skuber] = {
-    val scheduler = Scheduler.global
-    for {
-      config <- Resource.eval(Task.delay(ConfigFactory.load()))
-      actorSystem <- Skuber.actorSystem(scheduler, config)
-      configPath <- Resource.eval(KubeconfigPath.fromEnv[Task])
-      k8sConfig <- Resource.eval(Task.fromTry(skuber.api.Configuration.parseKubeconfigFile(Paths.get(configPath))))
-      client <- Resource.make(Task.delay {
-        val client = skuber.api.client.init(k8sConfig.currentContext, LoggingConfig())(actorSystem)
-        new Skuber(client, scheduler, actorSystem)
-      })(skuber => Task(skuber.underlying.close))
-    } yield client
+    def actorSystem(config: Config, scheduler: ExecutionContext): Resource[IO, ActorSystem] = {
+      Resource.make(io.delay {
+        ActorSystem(
+          name = "foperatorActorSystem",
+          config = Some(overrideConfig(config)),
+          classLoader = None,
+          defaultExecutionContext = Some[ExecutionContext](scheduler)
+        )
+      })(sys => IOUtil.deferFuture(sys.terminate()).void)
+    }
   }
+
+  implicit def engine[IO[_]: Async, T<:skuber.ObjectResource]
+    (implicit rd: skuber.ResourceDefinition[T], fmt: Format[T])
+    : Engine[IO, Skuber[IO], T]
+    = new EngineImpl[IO, T]
 
   def overrideConfig(config: Config) = configOverrides.withFallback(config)
 
@@ -63,57 +74,38 @@ object Skuber extends Client.Companion[Task, Skuber] {
     "akka.logging-filter" -> "akka.event.slf4j.Slf4jLoggingFilter",
   ).asJava)
 
-  def actorSystem(scheduler: Scheduler, config: Config): Resource[Task, ActorSystem] = {
-    val schedulerImpl = scheduler match {
-      case _: TestScheduler => {
-        // Akka is rife with Await.result() calls, which completely breaks any attempt to use a synthetic
-        // scheduler. This seems like the least broken alternative.
-        ExecutionContext.parasitic
-      }
-      case other => other
-    }
-    Resource.make(Task.delay {
-      ActorSystem(
-        name = "foperatorActorSystem",
-        config = Some(overrideConfig(config)),
-        classLoader = None,
-        defaultExecutionContext = Some[ExecutionContext](schedulerImpl)
-      )
-    })(sys => Task.deferFuture(sys.terminate()).void)
-  }
-
-  private class EngineImpl[T<: skuber.ObjectResource](
+  private class EngineImpl[IO[_], T<: skuber.ObjectResource](
     implicit rd: ResourceDefinition[T],
+    io: Async[IO],
     fmt: Format[T],
-  ) extends EngineFor[T] with Logging {
+  ) extends Engine[IO, Skuber[IO], T] with Logging {
     override def classifyError(e: Throwable): ClientError = e match {
       case err: skuber.K8SException if err.status.code.contains(409) => ClientError.VersionConflict(e)
       case err: skuber.K8SException if err.status.code.contains(404) => ClientError.NotFound(e)
       case _ => ClientError.Unknown(e)
     }
 
-    override def read(c: Skuber, t: Id[T]): Task[Option[T]] =
-      Task.deferFuture(c.underlying.usingNamespace(t.namespace).getOption(t.name))
+    override def read(c: Skuber[IO], t: Id[T]): IO[Option[T]] =
+      IOUtil.deferFuture(c.underlying.usingNamespace(t.namespace).getOption(t.name))
 
-    override def create(c: Skuber, t: T): Task[Unit] =
-      Task.deferFuture(c.underlying.create(t)).void
+    override def create(c: Skuber[IO], t: T): IO[Unit] =
+      IOUtil.deferFuture(c.underlying.create(t)).void
 
-    override def update(c: Skuber, t: T): Task[Unit] =
-      Task.deferFuture(c.underlying.update(t)).void
+    override def update(c: Skuber[IO], t: T): IO[Unit] =
+      IOUtil.deferFuture(c.underlying.update(t)).void
 
-    override def updateStatus[St](c: Skuber, t: T, st: St)(implicit sub: HasStatus[T, St]): Task[Unit] = {
+    override def updateStatus[St](c: Skuber[IO], t: T, st: St)(implicit sub: HasStatus[T, St]): IO[Unit] = {
       // we assume that HasStatus corresponds to substatus
       implicit val skuberStatus: HasStatusSubresource[T] = new skuber.HasStatusSubresource[T] {}
-      Task.deferFuture(c.underlying.updateStatus(sub.withStatus(t, st))).void
+      IOUtil.deferFuture(c.underlying.updateStatus(sub.withStatus(t, st))).void
     }
 
-    override def delete(c: Skuber, id: Id[T]): Task[Unit] =
-      Task.deferFuture(c.underlying.usingNamespace(id.namespace).delete(id.name))
+    override def delete(c: Skuber[IO], id: Id[T]): IO[Unit] =
+      IOUtil.deferFuture(c.underlying.usingNamespace(id.namespace).delete(id.name))
 
-    override def listAndWatch(c: Skuber, opts: ListOptions): Task[(List[T], fs2.Stream[Task, Event[T]])] = {
+    override def listAndWatch(c: Skuber[IO], opts: ListOptions): IO[(List[T], fs2.Stream[IO, Event[T]])] = {
       implicit val lrf: Format[skuber.ListResource[T]] = ListResourceFormat[T]
       implicit val sys: ActorSystem = c.actorSystem
-      implicit val io: CatsConcurrentEffectForTask = Task.catsEffect(c.scheduler)
 
       // skuber lets you build typed requirements, but they all end up as a toString anyway.
       // the "exists" requirement performs no formatting or validation, so we can tunnel
@@ -129,18 +121,18 @@ object Skuber extends Client.Companion[Task, Skuber] {
 
       val namespaced = c.underlying.usingNamespace(opts.namespace)
 
-      Task.deferFuture(namespaced.listWithOptions[skuber.ListResource[T]](listOptions)).map { listResource =>
+      IOUtil.deferFuture(namespaced.listWithOptions[skuber.ListResource[T]](listOptions)).map { listResource =>
         val source = namespaced.watchWithOptions[T](listOptions.copy(
           resourceVersion = Some(listResource.resourceVersion),
           timeoutSeconds = Some(30) // TODO configurable?
         ))
         logger.debug(s"ResourceMirror[${rd.spec.names.kind}] in sync, watching for updates")
-        val updates = fromPublisher[Task, WatchEvent[T]](source.runWith(Sink.asPublisher(fanout = false)))
-          .evalMap { e =>
+        val updates = fromPublisher[IO, WatchEvent[T]](source.runWith(Sink.asPublisher(fanout = false)), 1)
+          .evalMap[IO, Event[T]] { e =>
             e._type match {
               case EventType.ADDED | EventType.MODIFIED => io.pure(Event.Updated(e._object))
               case EventType.DELETED => io.pure(Event.Deleted(e._object))
-              case EventType.ERROR | _ => io.raiseError(new RuntimeException(s"Error watching resources: $e"))
+              case EventType.ERROR | _ => io.raiseError[Event[T]](new RuntimeException(s"Error watching resources: $e"))
             }
           }
         (listResource.items, updates)

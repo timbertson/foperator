@@ -1,7 +1,7 @@
 package foperator
 
 import cats.Eq
-import cats.effect.Concurrent
+import cats.effect.{Async, Concurrent}
 import cats.implicits._
 import foperator.internal.Logging
 import foperator.types._
@@ -85,7 +85,7 @@ private class ReconcilerImpl[IO[_], C, T](
 class ReconcilerBuilder[IO[_], C, T](implicit
   e: Engine[IO, C, T],
   res: ObjectResource[T],
-  io: Concurrent[IO],
+  io: Async[IO],
 ) extends Logging {
   def empty: Reconciler[IO, C, T] = new ReconcilerImpl[IO, C, T]((_, _) => io.pure(ReconcileResult.Ok), Nil)
 
@@ -126,6 +126,6 @@ object Reconciler {
   def builder[IO[_], C, T](implicit
     e: Engine[IO, C, T],
     res: ObjectResource[T],
-    io: Concurrent[IO],
+    io: Async[IO],
   ) = new ReconcilerBuilder[IO, C, T]()
 }

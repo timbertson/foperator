@@ -1,8 +1,7 @@
 package foperator.backend
 
 import cats.Eq
-import cats.effect.concurrent.Deferred
-import cats.effect.{Concurrent, ConcurrentEffect, ContextShift, Resource, Timer}
+import cats.effect.{Async, Deferred, Resource}
 import cats.implicits._
 import com.goyeau.kubernetes.client
 import com.goyeau.kubernetes.client.foperatorext.Types._
@@ -12,33 +11,32 @@ import foperator.internal.Logging
 import foperator.types._
 import fs2.{Chunk, Stream}
 import io.k8s.apimachinery.pkg.apis.meta.v1.{ObjectMeta, Time}
-import monix.eval.Task
-import monix.eval.instances.CatsConcurrentEffectForTask
-import monix.execution.Scheduler
 import org.http4s.client.UnexpectedStatus
 import org.http4s.{Status, Uri}
 import org.typelevel.log4cats.Logger
+import org.typelevel.log4cats.slf4j.Slf4jLogger
 
 import java.io.File
 import java.time.format.DateTimeFormatter
 import java.time.{Instant, ZoneOffset}
+import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.language.reflectiveCalls
 
-class KubernetesClient[IO[_] : Concurrent](val underlying: client.KubernetesClient[IO])
-extends Client[IO, KubernetesClient[IO]] {
+class KubernetesClient[IO[_] : Async](val underlying: client.KubernetesClient[IO])
+  extends Client[IO, KubernetesClient[IO]] {
   override def apply[T]
     (implicit e: Engine[IO, KubernetesClient[IO], T], res: ObjectResource[T]): Operations[IO, KubernetesClient[IO], T]
     = new Operations[IO, KubernetesClient[IO], T](this)
 }
 
 object KubernetesClient {
-  def apply[IO[_]](implicit cs: ContextShift[IO], ce: ConcurrentEffect[IO]) = new Companion[IO]
+  def apply[IO[_]: Async : Logger] = new Companion[IO]
 
-  class Companion[IO[_]](implicit cs: ContextShift[IO], ce: ConcurrentEffect[IO]) extends Client.Companion[IO, KubernetesClient[IO]] {
+  class Companion[IO[_]](implicit io: Async[IO], logger: Logger[IO]) extends Client.Companion[IO, KubernetesClient[IO]] {
     def wrap(underlying: client.KubernetesClient[IO]): KubernetesClient[IO] = new KubernetesClient(underlying)
 
-    def default(implicit logger: Logger[IO]): Resource[IO, KubernetesClient[IO]] = for {
+    def default: Resource[IO, KubernetesClient[IO]] = for {
       path <- Resource.eval(KubeconfigPath.fromEnv[IO])
       client <- client.KubernetesClient[IO](KubeConfig.fromFile(new File(path)))
     } yield wrap(client)
@@ -48,7 +46,7 @@ object KubernetesClient {
     def apply(config: IO[KubeConfig]): Resource[IO, KubernetesClient[IO]] = client.KubernetesClient(config).map(wrap)
   }
 
-  implicit def engine[IO[_] : Concurrent: Timer, T<:HasMetadata, TList<:ListOf[T]]
+  implicit def engine[IO[_] : Async, T<:HasMetadata, TList<:ListOf[T]]
     (implicit api: HasResourceApi[IO, T, TList], res: ObjectResource[T])
   : Engine[IO, KubernetesClient[IO], T]
   = new EngineImpl[IO, T, TList]
@@ -70,10 +68,11 @@ object KubernetesClient {
   // and they're only used in the TestClient backend :shrug:
   // TODO feature request: expose kind somewhere more accessible
   private val dummyClient = {
-    implicit val io: CatsConcurrentEffectForTask = Task.catsEffect(Scheduler.global)
-    client.KubernetesClient(KubeConfig.of[Task](
+    implicit def unsafeLogger[F[_]: Async] = Slf4jLogger.getLogger[F]
+    val effect = client.KubernetesClient(KubeConfig.of[cats.effect.IO](
       Uri.fromString("https://127.0.0.1/fake-kubernetes").toOption.get
-    )).use(Task.pure).runSyncUnsafe(10.seconds)(Scheduler.global, implicitly)
+    )).use(c => implicitly[Async[cats.effect.IO]].pure(c))
+    Await.result(effect.unsafeToFuture()(cats.effect.unsafe.implicits.global), 10.seconds)
   }
 
   private [backend] class ResourceImpl[IO[_], St, T<:ResourceGetters[St], TList<:ListOf[T]](
@@ -123,7 +122,7 @@ object KubernetesClient {
   class StatusError(val status: Status) extends RuntimeException(status.toString)
 
   private class EngineImpl[IO[_], T<:HasMetadata, TList<:ListOf[T]]
-    (implicit api: HasResourceApi[IO, T, TList], res: ObjectResource[T], io: Concurrent[IO], timer: Timer[IO])
+    (implicit api: HasResourceApi[IO, T, TList], res: ObjectResource[T], io: Async[IO])
     extends Engine[IO, KubernetesClient[IO], T] with Logging
   {
     private def ns(c: KubernetesClient[IO], id: Id[T]) =
@@ -225,7 +224,7 @@ object KubernetesClient {
             }
           }
           val reconcileStream = Stream.evalUnChunk(reconcile.map(Chunk.apply))
-          val reconcileAfterDelay = Stream.evalUnChunk(timer.sleep(20.seconds) >> triggerReconcile.as(Chunk.empty[Event[T]]))
+          val reconcileAfterDelay = Stream.evalUnChunk(io.sleep(20.seconds) >> triggerReconcile.as(Chunk.empty[Event[T]]))
           (initial.items.toList, events.merge(reconcileStream).merge(reconcileAfterDelay))
         }
       }

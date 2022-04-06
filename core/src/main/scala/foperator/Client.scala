@@ -1,6 +1,6 @@
 package foperator
 
-import cats.effect.Concurrent
+import cats.effect.Async
 import foperator.types.{Engine, ObjectResource}
 
 trait Client[IO[_], C] {
@@ -19,7 +19,7 @@ object Client {
     def Reconciler[T](implicit
       e: EngineFor[T],
       res: ObjectResource[T],
-      io: Concurrent[IO],
+      io: Async[IO],
     ) = new ReconcilerBuilder[IO, C, T]()
   }
 }
