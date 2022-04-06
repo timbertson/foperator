@@ -29,6 +29,7 @@ val common = Seq(
 
 lazy val core = (project in file("core"))
   .settings(common)
+  .settings(publicProjectSettings)
   .settings(
     name := "foperator-core",
   )
@@ -36,6 +37,7 @@ lazy val core = (project in file("core"))
 // split out of core so that it doesn't depend on monix
 lazy val testkit = (project in file("testkit"))
   .settings(common)
+  .settings(publicProjectSettings)
   .settings(
     name := "foperator-testkit",
     libraryDependencies ++= Seq(
@@ -61,6 +63,7 @@ lazy val tests = (project in file("tests"))
 // skuber backend
 lazy val skuber = (project in file("backends/skuber"))
   .settings(common)
+  .settings(publicProjectSettings)
   .settings(
     name := "foperator-backend-skuber",
     libraryDependencies ++= Seq(
@@ -73,6 +76,7 @@ lazy val skuber = (project in file("backends/skuber"))
 // kubernetes-client backend
 lazy val kclient = (project in file("backends/kubernetes-client"))
   .settings(common)
+  .settings(publicProjectSettings)
   .settings(
     name := "foperator-backend-kubernetes-client",
     libraryDependencies ++= Seq(
