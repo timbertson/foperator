@@ -15,8 +15,6 @@ val weaverSettings = Seq(
 )
 
 val common = Seq(
-  version := "1.0",
-
   organization := "net.gfxmonk",
   scalacOptions ~= (_ filterNot (_ == "-Xfatal-warnings")),
 
@@ -109,4 +107,4 @@ lazy val sample = (project in file("sample"))
     ),
   ).dependsOn(core, testkit, skuber, kclient).enablePlugins(PackPlugin)
 
-lazy val all = (project in file(".")).settings(hiddenProjectSettings).aggregate(testkit, tests, skuber, kclient, sample)
+lazy val all = (project in file(".")).settings(hiddenProjectSettings).aggregate(core, testkit, tests, skuber, kclient, sample)
