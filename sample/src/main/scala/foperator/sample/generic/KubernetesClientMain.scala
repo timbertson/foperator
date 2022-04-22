@@ -1,6 +1,6 @@
 package foperator.sample.generic
 
-import cats.effect.{Async, IO, IOApp}
+import cats.effect.{IO, IOApp}
 import com.goyeau.kubernetes.client.crd.CustomResource
 import foperator.backend.KubernetesClient
 import foperator.backend.kubernetesclient.implicits._
@@ -14,10 +14,6 @@ object KubernetesClientMain extends IOApp.Simple {
   implicit val logger = Slf4jLogger.getLogger[IO]
 
   override def run: IO[Unit] = {
-    // TODO: this shouldn't be necessary, but without it we get diverging implementation
-    // starting with method asyncForKleisli in object Async
-    implicit val async: Async[IO] = IO.asyncForIO
-
     KubernetesClient[IO].default.use { client =>
       new GenericOperator[IO, KubernetesClient[IO], CustomResourceDefinition, CustomResource](
         client,
