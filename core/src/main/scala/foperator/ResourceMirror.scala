@@ -45,12 +45,12 @@ object ResourceMirror extends Logging {
   private [foperator] def apply[IO[_], C, T, R](client: C, opts: ListOptions)(block: ResourceMirror[IO, T] => IO[R])
     (implicit io: Async[IO], res: ObjectResource[T], e: Engine[IO, C, T]): IO[R] = {
     for {
-      _ <- io.delay(logger.info("[{}]: Starting ResourceMirror", res.kind))
-      listAndWatch <- e.listAndWatch(client, opts).adaptError(new RuntimeException(s"Error listing / watching ${res.kind}", _))
+      _ <- io.delay(logger.info("[{}]: Starting ResourceMirror", res.kindDescription))
+      listAndWatch <- e.listAndWatch(client, opts).adaptError(new RuntimeException(s"Error listing / watching ${res.kindDescription}", _))
       (initial, rawUpdates) = listAndWatch
-      _ <- io.delay(logger.info("[{}]: List returned {} initial resources", res.kind, initial.size))
+      _ <- io.delay(logger.info("[{}]: List returned {} initial resources", res.kindDescription, initial.size))
       updates = rawUpdates.handleErrorWith(e =>
-        Stream.eval(io.raiseError(new RuntimeException(s"Error watching ${res.kind} resources", e)))
+        Stream.eval(io.raiseError(new RuntimeException(s"Error watching ${res.kindDescription} resources", e)))
       )
       state <- IORef[IO].of(initial.map(obj => res.id(obj) -> ResourceState.of(obj)).toMap)
       trackedUpdates = trackState(state, updates).map(e => res.id(e.raw))
@@ -80,7 +80,7 @@ object ResourceMirror extends Logging {
     input.evalTap[IO, Unit] { event =>
       val id = res.id(event.raw)
       val desc = s"${Event.desc(event)}($id, v${res.version(event.raw).getOrElse("")})"
-      io.delay(logger.debug("[{}] Updating state for: {}", res.kind, desc))
+      io.delay(logger.debug("[{}] Updating state for: {}", res.kindDescription, desc))
     }.evalTap {
       case Event.Deleted(t) => state.update_(s => s.removed(res.id(t)))
       case Event.Updated(t) => state.update_(s => s.updated(res.id(t), ResourceState.of(t)))

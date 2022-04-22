@@ -79,7 +79,7 @@ class TestClientError(val e: ClientError) extends RuntimeException(e.throwable)
 
 case class ResourceKind(kind: String)
 object ResourceKind {
-  def forClass[T](implicit res: HasKind[T]) = new ResourceKind(res.kind)
+  def forClass[T](implicit res: HasKind[T]) = new ResourceKind(res.kindDescription)
   implicit val eq: Eq[ResourceKind] = Eq.fromUniversalEquals
 }
 case class ResourceKey(kind: ResourceKind, id: Id[Any])

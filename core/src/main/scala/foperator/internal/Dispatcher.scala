@@ -77,14 +77,14 @@ private[foperator] object Dispatcher extends Logging {
         input.get(id).flatMap {
           case None => io.pure(None)
           case Some(r) => for {
-            _ <- io.delay(logger.info("[{}] Reconciling {} v{}", res.kind, id, res.version(r.raw).getOrElse("0")))
+            _ <- io.delay(logger.info("[{}] Reconciling {} v{}", res.kindDescription, id, res.version(r.raw).getOrElse("0")))
             result <- reconcile(client, r)
           } yield Some(result)
         }
       }
 
       val resourceLoop = new ReconcileLoop.Impl[F, Id[T]](action, updater, retryDelay)
-      val run = io.delay(logger.info("[{}] Starting reconciler", res.kind)) >> main(state, error, resourceLoop, input.ids)
+      val run = io.delay(logger.info("[{}] Starting reconciler", res.kindDescription)) >> main(state, error, resourceLoop, input.ids)
       (run, cancel(state))
     }
     Resource(acquire)
@@ -139,7 +139,7 @@ private[foperator] object Dispatcher extends Logging {
 
   private def cancel[F[_], K](state: IORef[F, StateMap[F, K]])(implicit io: Concurrent[F], res: ObjectResource[_]): F[Unit] = {
     state.readLast.flatMap { stateMap =>
-      logger.info("[{}] Cancelling dispatcher loop ({} active fibers)", res.kind, stateMap.size)
+      logger.info("[{}] Cancelling dispatcher loop ({} active fibers)", res.kindDescription, stateMap.size)
       val fibers = stateMap.values.map(_._2).toList
       fibers.traverse_(f => f.cancel)
     }

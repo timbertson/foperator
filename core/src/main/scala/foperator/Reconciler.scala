@@ -53,7 +53,7 @@ private class ReconcilerImpl[IO[_], C, T](
             // install finalizer before doing any user actions.
             // Note that we don't invoke the user reconciler in this case,
             // we rely on a re-reconcile being triggered by the metadata addition
-            logger.info("[{}] Adding finalizer {} to {}", res.kind, finalizerNames.mkString(", "), res.id(resource))
+            logger.info("[{}] Adding finalizer {} to {}", res.kindDescription, finalizerNames.mkString(", "), res.id(resource))
             e.update(client, updated).as(ReconcileResult.Ok)
           }
         }
@@ -65,7 +65,7 @@ private class ReconcilerImpl[IO[_], C, T](
           case (id, fn) :: tail => {
             ResourceState.removeFinalizer(resource, id) match {
               case Some(updated) => {
-                logger.info("[{}] Finalizing {} ({})", res.kind, res.id(resource), id)
+                logger.info("[{}] Finalizing {} ({})", res.kindDescription, res.id(resource), id)
                 // we could probably run multiple finalizers before updating,
                 // but there's almost never more than one :shrug:
                 fn(client, resource).flatMap { (_: Unit) =>

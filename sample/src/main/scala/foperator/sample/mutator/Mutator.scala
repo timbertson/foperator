@@ -117,7 +117,7 @@ object Mutator extends Logging {
   {
     override def run: IO[Unit] = ops.delete(Id.of(resource))
 
-    override def pretty: String = s"Delete[${rd.kind}](${rd.id(resource)})"
+    override def pretty: String = s"Delete[${rd.kindDescription}](${rd.id(resource)})"
 
     override def conflictKey: Option[Id[_]] = Some(Id.of(resource))
   }
@@ -125,7 +125,7 @@ object Mutator extends Logging {
   case class Create[T](random: Random, resource: T)
     (implicit ops: Operations[IO, _, T], res: ObjectResource[T], n: WithName[T]) extends Action
   {
-    def pretty: String = s"Create[${res.kind}]"
+    def pretty: String = s"Create[${res.kindDescription}]"
 
     private def randomId: IO[String] = {
       IO(random.nextBytes(4)).map { bytes =>
@@ -151,7 +151,7 @@ object Mutator extends Logging {
   ) extends Action {
     override def run: IO[Unit] = ops.write(initial.copy(spec=newSpec)).void
 
-    def pretty: String = s"Modify[${res.kind}](${res.id(initial)}, ${pp.pretty(newSpec)})"
+    def pretty: String = s"Modify[${res.kindDescription}](${res.id(initial)}, ${pp.pretty(newSpec)})"
 
     override def conflictKey: Option[Id[_]] = Some(Id.of(initial))
   }
@@ -350,7 +350,7 @@ class Mutator[C](client: C, greetings: ResourceMirror[IO, Greeting], people: Res
   }
 
   private def watchResource[T](mirror: ResourceMirror[IO, T])(implicit res: ObjectResource[T], pp: PrettyPrint[T]): IO[Unit] = {
-    val logId = s"${res.kind}"
+    val logId = s"${res.kindDescription}"
     mirror.all.map(_.size).flatMap { initialItems =>
       mirror.ids.drop(initialItems.toLong).evalMap { id =>
         mirror.all.flatMap { all =>

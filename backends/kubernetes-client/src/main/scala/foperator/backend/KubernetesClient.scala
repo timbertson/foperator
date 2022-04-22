@@ -11,17 +11,16 @@ import foperator.internal.Logging
 import foperator.types._
 import fs2.{Chunk, Stream}
 import io.k8s.apimachinery.pkg.apis.meta.v1.{ObjectMeta, Time}
+import org.http4s.Status
 import org.http4s.client.UnexpectedStatus
-import org.http4s.{Status, Uri}
 import org.typelevel.log4cats.Logger
-import org.typelevel.log4cats.slf4j.Slf4jLogger
 
 import java.io.File
 import java.time.format.DateTimeFormatter
 import java.time.{Instant, ZoneOffset}
-import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.language.reflectiveCalls
+import scala.reflect.ClassTag
 
 class KubernetesClient[IO[_] : Async](val underlying: client.KubernetesClient[IO])
   extends Client[IO, KubernetesClient[IO]] {
@@ -63,18 +62,6 @@ object KubernetesClient {
     def updateStatus(c: client.KubernetesClient[IO], t: T): IO[Status]
   }
 
-  // we need a fake client instance just to get api endpoint strings.
-  // This is definitely using it wrong, but we only need a few strings,
-  // and they're only used in the TestClient backend :shrug:
-  // TODO feature request: expose kind somewhere more accessible
-  private val dummyClient = {
-    implicit def unsafeLogger[F[_]: Async] = Slf4jLogger.getLogger[F]
-    val effect = client.KubernetesClient(KubeConfig.of[cats.effect.IO](
-      Uri.fromString("https://127.0.0.1/fake-kubernetes").toOption.get
-    )).use(c => implicitly[Async[cats.effect.IO]].pure(c))
-    Await.result(effect.unsafeToFuture()(cats.effect.unsafe.implicits.global), 10.seconds)
-  }
-
   private [backend] class ResourceImpl[IO[_], St, T<:ResourceGetters[St], TList<:ListOf[T]](
     getApi: (client.KubernetesClient[IO], String) => NamespacedResourceAPI[IO, T, TList] with HasResourceURI,
     withMeta: (T, ObjectMeta) => T,
@@ -82,7 +69,7 @@ object KubernetesClient {
     updateStatusFn: (client.KubernetesClient[IO], Id[T], T) => IO[Status],
     eq: Eq[T] = Eq.fromUniversalEquals[T],
     eqSt: Eq[St] = Eq.fromUniversalEquals[St],
-  ) extends ObjectResource[T] with HasStatus[T, St] with HasResourceApi[IO, T, TList] with Eq[T] {
+  )(implicit classTag: ClassTag[T]) extends ObjectResource[T] with HasStatus[T, St] with HasResourceApi[IO, T, TList] with Eq[T] {
 
     private def meta(t: T) = t.metadata.getOrElse(ObjectMeta())
 
@@ -92,7 +79,7 @@ object KubernetesClient {
 
     override def withStatus(obj: T, status: St): T = withStatusFn(obj, status)
 
-    override def kind: String = getApi(dummyClient.asInstanceOf[client.KubernetesClient[IO]], "ns").resourceUri.path.segments.lastOption.map(_.toString).getOrElse("UNKNOWN")
+    override def kindDescription: String = classTag.runtimeClass.getSimpleName
 
     override def finalizers(t: T): List[String] = t.metadata.flatMap(_.finalizers).map(_.toList).getOrElse(Nil)
 
@@ -193,12 +180,12 @@ object KubernetesClient {
         } yield {
           val triggerReconcile = startReconcile.complete(()).attempt.void
           val events = updates.zipWithIndex.evalMap[IO, Event[T]] {
-            case (Left(err), _) => io.raiseError(new RuntimeException(s"Error watching ${res.kind} resources: $err"))
+            case (Left(err), _) => io.raiseError(new RuntimeException(s"Error watching ${res.kindDescription} resources: $err"))
             case (Right(event), idx) => {
               (if (idx === 0) triggerReconcile else io.unit) >> (event.`type` match {
                 case EventType.ADDED | EventType.MODIFIED => io.pure(Event.Updated(event.`object`))
                 case EventType.DELETED => io.pure(Event.Deleted(event.`object`))
-                case EventType.ERROR => io.raiseError(new RuntimeException(s"Error watching ${res.kind} resources: ${event}"))
+                case EventType.ERROR => io.raiseError(new RuntimeException(s"Error watching ${res.kindDescription} resources: ${event}"))
               })
             }
           }

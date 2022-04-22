@@ -23,7 +23,8 @@ trait HasFinalizers[T] {
 }
 
 trait HasKind[T] {
-  def kind: String
+  // short name used in logs etc, doesn't need to match k8s kind exactly
+  def kindDescription: String
 }
 
 trait HasId[T] {

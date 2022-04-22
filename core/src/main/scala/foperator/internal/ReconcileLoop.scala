@@ -1,7 +1,7 @@
 package foperator.internal
 
 import cats.effect.{Async, Deferred}
-import cats.implicits._
+import cats.syntax.all._
 import foperator.ReconcileResult
 import foperator.internal.Dispatcher._
 
@@ -24,7 +24,10 @@ object ReconcileLoop extends Logging {
 
     override def markDirty: State[IO] => IO[State[IO]] = {
       case Reconciling | Dirty => io.pure(Dirty)
-      case Waiting(wakeup) => wakeup.as(Dirty)
+      case Waiting(wakeup) => {
+        // TODO extension method (`wakeup.as(Dirty)`) not working in scala3
+        io.as(wakeup, Dirty)
+      }
     }
 
     private def maybeReschedule(k: K, explicitDelay: Option[FiniteDuration], errorCount: ErrorCount) = updateState[IO[Unit]](k, {

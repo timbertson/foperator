@@ -35,7 +35,7 @@ object TestResource {
   {
     type T = TestResource[Sp,St]
     override def id(t: T): Id[T] = Id.apply[T]("default", t.name)
-    override def kind: String = s"${classOf[T].getSimpleName}[${classSp.getClass.getSimpleName},${classSt.getClass.getSimpleName}]"
+    override def kindDescription: String = s"${classOf[T].getSimpleName}[${classSp.getClass.getSimpleName},${classSt.getClass.getSimpleName}]"
     override def version(t: T): Option[String] = t.meta.version
     override def withVersion(t: T, newVersion: String): T = t.copy(meta=t.meta.copy(version = Some(newVersion)))
     override def finalizers(t: T): List[String] = t.meta.finalizers

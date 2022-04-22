@@ -4,6 +4,13 @@ val fs2Version = "3.2.5"
 val catsEffectVersion = "3.3.7"
 val logback = "ch.qos.logback" % "logback-classic" % "1.2.3"
 
+val crossScala3 = Seq(
+  crossScalaVersions := List("3.1.1"),
+)
+val scala2Only = Seq(
+  crossScalaVersions := Nil
+)
+
 val weaverVersion = "0.7.11"
 val weaverSettings = Seq(
   libraryDependencies ++= Seq(
@@ -17,13 +24,12 @@ val weaverSettings = Seq(
 val common = Seq(
   organization := "net.gfxmonk",
   scalacOptions ~= (_ filterNot (_ == "-Xfatal-warnings")),
-
   libraryDependencies ++= Seq(
     "org.typelevel" %% "cats-effect-std" % catsEffectVersion,
     "co.fs2" %% "fs2-core" % fs2Version,
-    "org.slf4j" % "slf4j-api" % "1.7.9",
+    "org.slf4j" % "slf4j-api" % "1.7.36",
   )
-)
+) ++ crossScala3
 
 lazy val core = (project in file("core"))
   .settings(common)
@@ -48,6 +54,7 @@ lazy val testkit = (project in file("testkit"))
 lazy val tests = (project in file("tests"))
   .settings(common)
   .settings(hiddenProjectSettings)
+  .settings(scala2Only)
   .settings(
     name := "foperator-tests",
     libraryDependencies ++= Seq(
@@ -62,12 +69,13 @@ lazy val tests = (project in file("tests"))
 lazy val skuber = (project in file("backends/skuber"))
   .settings(common)
   .settings(publicProjectSettings)
+  .settings(scala2Only)
   .settings(
     name := "foperator-backend-skuber",
     libraryDependencies ++= Seq(
-      "io.skuber" %% "skuber" % "2.6.2",
+      "io.skuber" %% "skuber" % "2.6.4",
       "co.fs2" %% "fs2-reactive-streams" % fs2Version,
-      "com.typesafe.akka" %% "akka-slf4j" % "2.6.15",
+      "com.typesafe.akka" %% "akka-slf4j" % "2.6.19",
     )
   ).dependsOn(core)
 
@@ -86,6 +94,7 @@ lazy val sample = (project in file("sample"))
   .settings(common)
   .settings(hiddenProjectSettings)
   .settings(weaverSettings)
+  .settings(scala2Only)
   .settings(
     name := "foperator-sample",
     libraryDependencies ++= Seq(logback),
@@ -107,4 +116,12 @@ lazy val sample = (project in file("sample"))
     ),
   ).dependsOn(core, testkit, skuber, kclient).enablePlugins(PackPlugin)
 
-lazy val all = (project in file(".")).settings(hiddenProjectSettings).aggregate(core, testkit, tests, skuber, kclient, sample)
+lazy val all = (project in file("."))
+  .settings(hiddenProjectSettings)
+  .settings(scala2Only)
+  .aggregate(core, testkit, tests, skuber, kclient, sample)
+
+lazy val scala3 = (project in file("scala3"))
+  .settings(hiddenProjectSettings)
+  .settings(crossScala3)
+  .aggregate(core, testkit, kclient)

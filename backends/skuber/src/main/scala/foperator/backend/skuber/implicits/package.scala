@@ -37,7 +37,7 @@ package object implicits {
   implicit def skuberObjectResource[T<:skuber.ObjectResource](implicit rd: ResourceDefinition[T], ed: skuber.ObjectEditor[T]): ObjectResource[T] = new ObjectResource[T] {
     override def id(t: T): Id[T] = Id.apply[T](t.metadata.namespace, t.metadata.name)
 
-    override def kind: String = rd.spec.names.kind
+    override def kindDescription: String = rd.spec.names.kind
 
     override def finalizers(t: T): List[String] = t.metadata.finalizers.getOrElse(Nil)
 
