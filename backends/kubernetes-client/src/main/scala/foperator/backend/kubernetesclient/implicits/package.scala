@@ -13,7 +13,7 @@ import io.k8s.apiextensionsapiserver.pkg.apis.apiextensions.v1.{CustomResourceDe
 import io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
 
 package object implicits {
-  import foperator.backend.KubernetesClient._
+  import foperator.backend.kubernetesclient.impl._
 
   // implicits that don't have a better place
   implicit val metadataEq: Eq[ObjectMeta] = Eq.fromUniversalEquals
@@ -28,7 +28,7 @@ package object implicits {
 
   implicit def implicitCustomResourceResourceApi[IO[_]: Async, Sp : Encoder: Decoder, St: Encoder: Decoder]
     (implicit crd: CrdContext[CustomResource[Sp, St]])
-  : ResourceApiImpl[IO, St, CustomResource[Sp,St], CustomResourceList[Sp, St]]
+  : HasResourceApi[IO, CustomResource[Sp,St], CustomResourceList[Sp, St]]
   = new ResourceApiImpl[IO, St, CustomResource[Sp, St], CustomResourceList[Sp, St]](
     (c, ns) => c.customResources[Sp, St](crd.ctx).namespace(ns),
     Some((c: client.KubernetesClient[IO], id: Id[CustomResource[Sp, St]], t: CustomResource[Sp, St]) => {
@@ -50,7 +50,7 @@ package object implicits {
     (o, s) => o.copy(status=Some(s)),
   )
 
-  implicit def implicitCrdResourceApi[IO[_]: Async]: ResourceApiImpl[IO, CustomResourceDefinitionStatus, CustomResourceDefinition, CustomResourceDefinitionList]
+  implicit def implicitCrdResourceApi[IO[_]: Async]: HasResourceApi[IO, CustomResourceDefinition, CustomResourceDefinitionList]
   = new ResourceApiImpl[IO, CustomResourceDefinitionStatus, CustomResourceDefinition, CustomResourceDefinitionList](
     // CRDs aren't namespaced, so we just ignore the namespace
     (c, _) => c.customResourceDefinitions)
@@ -59,7 +59,7 @@ package object implicits {
       (o, m) => o.copy(metadata=Some(m)),
       (o, s) => o.copy(status=Some(s)))
 
-  implicit def implicitPodResourceApi[IO[_]: Async]: ResourceApiImpl[IO, PodStatus, Pod, PodList] =
+  implicit def implicitPodResourceApi[IO[_]: Async]: HasResourceApi[IO, Pod, PodList] =
     new ResourceApiImpl[IO, PodStatus, Pod, PodList]((c, ns) => c.pods.namespace(ns))
 
   implicit val implicitDeploymentResource: ResourceImpl[DeploymentStatus, Deployment] =
@@ -67,7 +67,7 @@ package object implicits {
       (o, m) => o.copy(metadata=Some(m)),
       (o, s) => o.copy(status=Some(s)))
 
-  implicit def implicitDeploymentResourceApi[IO[_]: Async]: ResourceApiImpl[IO, DeploymentStatus, Deployment, DeploymentList] =
+  implicit def implicitDeploymentResourceApi[IO[_]: Async]: HasResourceApi[IO, Deployment, DeploymentList] =
     new ResourceApiImpl[IO, DeploymentStatus, Deployment, DeploymentList](
       (c, ns) => c.deployments.namespace(ns))
 
