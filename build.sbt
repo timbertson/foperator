@@ -4,11 +4,14 @@ val fs2Version = "3.2.5"
 val catsEffectVersion = "3.3.7"
 val logback = "ch.qos.logback" % "logback-classic" % "1.2.3"
 
+val scala3Version = "3.1.1"
+val scala2Version = "2.13.7"
+
 val crossScala3 = Seq(
-  crossScalaVersions := List("3.1.1"),
+  crossScalaVersions := List(scala2Version, scala3Version),
 )
 val scala2Only = Seq(
-  crossScalaVersions := Nil
+  crossScalaVersions := List(scala2Version)
 )
 
 val weaverVersion = "0.7.11"
@@ -125,3 +128,7 @@ lazy val scala3 = (project in file("scala3"))
   .settings(hiddenProjectSettings)
   .settings(crossScala3)
   .aggregate(core, testkit, kclient)
+
+
+addCommandAlias("release3", s"; ++ ${scala3Version}; sonatypeBundleClean; scala3/publishSigned; sonatypeBundleRelease")
+addCommandAlias("release2", s"; ++ ${scala2Version}; sonatypeBundleClean; publishSigned; sonatypeBundleRelease")
