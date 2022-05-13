@@ -1,1 +1,0 @@
-generated/release.sh
