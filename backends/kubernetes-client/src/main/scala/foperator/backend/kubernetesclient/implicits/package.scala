@@ -18,9 +18,7 @@ package object implicits {
   // implicits that don't have a better place
   implicit val metadataEq: Eq[ObjectMeta] = Eq.fromUniversalEquals
 
-  implicit def implicitCustomResourceResource[Sp : Encoder: Decoder, St: Encoder: Decoder]
-    (implicit crd: CrdContext[CustomResource[Sp, St]])
-    : ResourceImpl[St, CustomResource[Sp,St]]
+  implicit def implicitCustomResourceResource[Sp, St]: ResourceImpl[St, CustomResource[Sp,St]]
     = new ResourceImpl[St, CustomResource[Sp, St]](
       (o, m) => o.copy(metadata=Some(m)),
       (o, s) => o.copy(status=Some(s)),
@@ -36,7 +34,6 @@ package object implicits {
     })
   )
 
-  // TODO implement in ResourceImpl
   implicit def implicitCustomResourceSpec[Sp,St]: HasSpec[CustomResource[Sp, St], Sp]
   = new HasSpec[CustomResource[Sp, St], Sp] {
     override def spec(obj: CustomResource[Sp, St]): Sp = obj.spec
