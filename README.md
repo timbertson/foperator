@@ -1,3 +1,5 @@
+<img src="http://gfxmonk.net/dist/status/project/foperator.png">
+
 ![](/doc/logo.png)
 
 # _functional_ k8s operator framework, in Scala
