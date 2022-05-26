@@ -160,7 +160,7 @@ Since the beginning of this project, I've [read about](https://engineering.bitna
 
 After getting a working controller, I still couldn't figure out how to integrate a SharedInformer with controller-runtime's Manager. The only path forward I could find is to follow [this one blog post](https://itnext.io/what-i-learnt-about-kubernetes-controllers-db7591531973) and roll my own controller without the manager. I don't _think_ I missed an easier way to integrate these, and I did ask around.
 
-Ditching the Manager caused me to have to write a whole bunch of orchestration code myself. It may be that there's a way to do this that involves me doing less work. But part of the value of "use what everyone else is using" is that paths should be well-warn, and there should be plenty of examples and experience to lean on. In my case, that wasn't true at all.
+Ditching the Manager caused me to have to write a whole bunch of orchestration code myself. It may be that there's a way to do this that involves me doing less work. But part of the value of "use what everyone else is using" is that paths should be well-worn, and there should be plenty of examples and experience to lean on. In my case, that wasn't true at all.
 
 Here's some base controller stuff I needed, to interact with the workqueue:
 
