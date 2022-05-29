@@ -4,7 +4,7 @@
 
 # _functional_ k8s operator framework, in Scala
 
-Current status: everything works, but it's early days and it might change substantially without notice. Also it's not actually packaged anywhere.
+Current status: everything works, but it's early days and it might change substantially without notice.
 
 # Features
 
