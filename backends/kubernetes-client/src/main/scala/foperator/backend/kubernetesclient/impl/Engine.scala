@@ -1,6 +1,6 @@
 package foperator.backend.kubernetesclient.impl
 
-import cats.effect.{Async, Deferred}
+import cats.effect.Async
 import cats.implicits._
 import com.goyeau.kubernetes.client.EventType
 import com.goyeau.kubernetes.client.foperatorext.Types._
@@ -12,7 +12,6 @@ import fs2.{Chunk, Stream}
 import org.http4s.Status
 import org.http4s.client.UnexpectedStatus
 
-import scala.concurrent.duration._
 import scala.language.reflectiveCalls
 
 class StatusError(val status: Status) extends RuntimeException(status.toString)
@@ -64,65 +63,45 @@ private [backend] class EngineImpl[IO[_], T<:HasMetadata, TList<:ListOf[T]]
 
   override def delete(c: KubernetesClient[IO], id: Id[T]): IO[Unit] = handleResponse(ns(c, id).delete(id.name))
 
-  override def listAndWatch(c: KubernetesClient[IO], opts: ListOptions): IO[(List[T], fs2.Stream[IO, Event[T]])] = {
+  override def listAndWatch(c: KubernetesClient[IO], opts: ListOptions): fs2.Stream[IO, StateChange[T]] = {
     val ns = api.namespaceApi(c.underlying, opts.namespace)
-    if (opts.fieldSelector.nonEmpty) {
+    val validateFieldSelector = if (opts.fieldSelector.nonEmpty) {
       // TODO: feature request
       io.raiseError(new RuntimeException(s"kubernetes-client backend does not support fieldSelector in opts: ${opts}"))
-    } else {
-      val validateLabels = opts.labelSelector.traverse[IO, (String, String)] { l =>
-        l.split("=", 2) match {
-          case Array(k,v) => io.pure((k,v))
-          case _ =>
-            // TODO: feature-request
-            io.raiseError(new RuntimeException(s"kubernetes-client backend only supports equality-based labels, you provided: ${l}"))
-        }
-      }.map(_.toMap)
+    } else io.unit
 
-      for {
-        labels <- validateLabels
-        initial <- ns.list(labels)
-        // TODO: feature request: accept resourceVersion in watch request
-        //       (the below reconcile code could then be removed)
-        updates = ns.watch(labels)
-        startReconcile <- Deferred[IO, Unit]
-      } yield {
-        val triggerReconcile = startReconcile.complete(()).attempt.void
-        val events = updates.zipWithIndex.evalMap[IO, Event[T]] {
-          case (Left(err), _) => io.raiseError(new RuntimeException(s"Error watching ${res.kindDescription} resources: $err"))
-          case (Right(event), idx) => {
-            (if (idx === 0) triggerReconcile else io.unit) >> (event.`type` match {
-              case EventType.ADDED | EventType.MODIFIED => io.pure(Event.Updated(event.`object`))
-              case EventType.DELETED => io.pure(Event.Deleted(event.`object`))
-              case EventType.ERROR => io.raiseError(new RuntimeException(s"Error watching ${res.kindDescription} resources: ${event}"))
-            })
-          }
-        }
-
-        // we do a reconcile on the first update event,
-        val reconcile: IO[List[Event[T]]] = startReconcile.get.flatMap(_ => ns.list(labels)).map { secondary =>
-          val initialMap = initial.items.map(r => (res.id(r), r)).toMap
-          val secondaryMap = secondary.items.map(r => (res.id(r), r)).toMap
-          val allIds = (initialMap.keys ++ secondaryMap.keys).toSet
-          allIds.toList.flatMap[Event[T]] { id =>
-            (initialMap.get(id), secondaryMap.get(id)) match {
-              case (None, Some(current)) => Some(Event.Updated(current))
-              case (Some(prev), None) => Some(Event.Deleted(prev))
-              case (Some(prev), Some(current)) => {
-                if (res.version(prev) === res.version(current)) {
-                  None
-                } else {
-                  Some(Event.Updated(current))
-                }
-              }
-              case (None, None) => None // impossible, but humor the compiler
-            }
-          }
-        }
-        val reconcileStream = Stream.evalUnChunk(reconcile.map(Chunk.apply))
-        val reconcileAfterDelay = Stream.evalUnChunk(io.sleep(20.seconds) >> triggerReconcile.as(Chunk.empty[Event[T]]))
-        (initial.items.toList, events.merge(reconcileStream).merge(reconcileAfterDelay))
+    val validateLabels = opts.labelSelector.traverse[IO, (String, String)] { l =>
+      l.split("=", 2) match {
+        case Array(k,v) => io.pure((k,v))
+        case _ =>
+          // TODO: feature-request
+          io.raiseError(new RuntimeException(s"kubernetes-client backend only supports equality-based labels, you provided: ${l}"))
       }
-    }
+    }.map(_.toMap)
+
+    Stream.eval(for {
+      _ <- validateFieldSelector
+      labels <- validateLabels
+      // TODO: feature request: accept resourceVersion in watch request
+      //       (then we wouldn't have to resetState after the fist update)
+      //       https://github.com/joan38/kubernetes-client/issues/138
+      resetState = Stream.evalUnChunk(ns.list(labels).map(tl => Chunk(StateChange.ResetState(tl.items.toList))))
+      updates = ns.watch(labels)
+    } yield {
+      resetState ++ updates.zipWithIndex.flatMap[IO, StateChange[T]] {
+        case (Left(err), _) => Stream.raiseError[IO](new RuntimeException(s"Error watching ${res.kindDescription} resources: $err"))
+        case (Right(event), idx) => {
+          val outEvent = event.`type` match {
+            case EventType.ADDED | EventType.MODIFIED => io.pure(StateChange.Updated(event.`object`))
+            case EventType.DELETED => io.pure(StateChange.Deleted(event.`object`))
+            case EventType.ERROR => io.raiseError(new RuntimeException(s"Error watching ${res.kindDescription} resources: ${event}"))
+          }
+          // we force a reset after seeing the first update; this
+          // ensures we catch anything missed between the initial list and update
+          val maybeReset = if (idx === 0) resetState else Stream.empty
+          Stream.evalUnChunk(outEvent.map(Chunk.singleton)) ++ maybeReset
+        }
+      }
+    }).flatten
   }
 }

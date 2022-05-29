@@ -14,6 +14,7 @@ import foperator._
 import foperator.internal.{IOUtil, Logging}
 import foperator.types._
 import fs2.interop.reactivestreams._
+import fs2.Stream
 import play.api.libs.json.Format
 
 import scala.jdk.CollectionConverters._
@@ -103,7 +104,7 @@ object Skuber {
     override def delete(c: Skuber[IO], id: Id[T]): IO[Unit] =
       IOUtil.deferFuture(c.underlying.usingNamespace(id.namespace).delete(id.name))
 
-    override def listAndWatch(c: Skuber[IO], opts: ListOptions): IO[(List[T], fs2.Stream[IO, Event[T]])] = {
+    override def listAndWatch(c: Skuber[IO], opts: ListOptions): fs2.Stream[IO, StateChange[T]] = {
       implicit val lrf: Format[skuber.ListResource[T]] = ListResourceFormat[T]
       implicit val sys: ActorSystem = c.actorSystem
 
@@ -121,22 +122,22 @@ object Skuber {
 
       val namespaced = c.underlying.usingNamespace(opts.namespace)
 
-      IOUtil.deferFuture(namespaced.listWithOptions[skuber.ListResource[T]](listOptions)).map { listResource =>
+      Stream.eval(IOUtil.deferFuture(namespaced.listWithOptions[skuber.ListResource[T]](listOptions)).map { listResource =>
         val source = namespaced.watchWithOptions[T](listOptions.copy(
           resourceVersion = Some(listResource.resourceVersion),
           timeoutSeconds = Some(30) // TODO configurable?
         ))
         logger.debug(s"ResourceMirror[${rd.spec.names.kind}] in sync, watching for updates")
         val updates = fromPublisher[IO, WatchEvent[T]](source.runWith(Sink.asPublisher(fanout = false)), 1)
-          .evalMap[IO, Event[T]] { e =>
+          .evalMap[IO, StateChange[T]] { e =>
             e._type match {
-              case EventType.ADDED | EventType.MODIFIED => io.pure(Event.Updated(e._object))
-              case EventType.DELETED => io.pure(Event.Deleted(e._object))
-              case EventType.ERROR | _ => io.raiseError[Event[T]](new RuntimeException(s"Error watching resources: $e"))
+              case EventType.ADDED | EventType.MODIFIED => io.pure(StateChange.Updated(e._object))
+              case EventType.DELETED => io.pure(StateChange.Deleted(e._object))
+              case EventType.ERROR | _ => io.raiseError[StateChange[T]](new RuntimeException(s"Error watching resources: $e"))
             }
           }
-        (listResource.items, updates)
-      }
+        Stream(StateChange.ResetState(listResource.items)) ++ updates
+      }).flatten
     }
   }
 }

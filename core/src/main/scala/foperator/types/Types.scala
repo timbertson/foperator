@@ -1,7 +1,7 @@
 package foperator.types
 
 import cats.Eq
-import foperator.{Event, Id, ListOptions}
+import foperator.{StateChange, Id, ListOptions}
 
 import java.time.Instant
 
@@ -72,5 +72,5 @@ trait Engine[IO[_], C, T] {
   def classifyError(e: Throwable): ClientError
 
   def delete(i: C, id: Id[T]): IO[Unit]
-  def listAndWatch(i: C, opts: ListOptions): IO[(List[T], fs2.Stream[IO, Event[T]])]
+  def listAndWatch(i: C, opts: ListOptions): fs2.Stream[IO, StateChange[T]]
 }

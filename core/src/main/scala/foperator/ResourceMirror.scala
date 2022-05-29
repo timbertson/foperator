@@ -1,8 +1,10 @@
 package foperator
 
 import cats.Monad
+import cats.effect.kernel.Deferred
 import cats.effect.{Async, Sync}
 import cats.implicits._
+import foperator.StateChange.ResetState
 import foperator.internal.{IORef, IOUtil, Logging}
 import foperator.types._
 import fs2.concurrent.Topic
@@ -44,21 +46,33 @@ object ResourceMirror extends Logging {
 
   private [foperator] def apply[IO[_], C, T, R](client: C, opts: ListOptions)(block: ResourceMirror[IO, T] => IO[R])
     (implicit io: Async[IO], res: ObjectResource[T], e: Engine[IO, C, T]): IO[R] = {
+    val listAndWatch = e.listAndWatch(client, opts).handleErrorWith(e =>
+      Stream.eval(io.raiseError(new RuntimeException(s"Error watching ${res.kindDescription} resources", e)))
+    )
+    forStateStream(listAndWatch)(block)
+  }
+
+  private [foperator] def forStateStream[IO[_], C, T, R](listAndWatch: Stream[IO, StateChange[T]])(block: ResourceMirror[IO, T] => IO[R])
+    (implicit io: Async[IO], res: ObjectResource[T]): IO[R] = {
+    // listAndWatch can return EOF after a while; keep running it forever
+    val updates = (listAndWatch ++ Stream.evalUnChunk {
+      io.delay(logger.info("listAndWatch ended; restarting")).as(Chunk.empty)
+    }).repeat
+
     for {
-      _ <- io.delay(logger.info("[{}]: Starting ResourceMirror", res.kindDescription))
-      listAndWatch <- e.listAndWatch(client, opts).adaptError(new RuntimeException(s"Error listing / watching ${res.kindDescription}", _))
-      (initial, rawUpdates) = listAndWatch
-      _ <- io.delay(logger.info("[{}]: List returned {} initial resources", res.kindDescription, initial.size))
-      updates = rawUpdates.handleErrorWith(e =>
-        Stream.eval(io.raiseError(new RuntimeException(s"Error watching ${res.kindDescription} resources", e)))
-      )
-      state <- IORef[IO].of(initial.map(obj => res.id(obj) -> ResourceState.of(obj)).toMap)
-      trackedUpdates = trackState(state, updates).map(e => res.id(e.raw))
+      state <- IORef[IO].of(Map.empty[Id[T], ResourceState[T]])
+      ready <- Deferred[IO, Unit]
       topic <- Topic[IO, Id[T]]
+      _ <- io.delay(logger.info("[{}]: Starting ResourceMirror", res.kindDescription))
+
+      // maintain `state` as updates flow through, then publish changed IDs
+      trackedUpdates = trackState(state, ready, updates).map(change => res.id(change.raw))
       consume = trackedUpdates.through(topic.publish).compile.drain
-      ids = injectInitial(state.readLast.map(_.keys.toList), topic)
+
+      initial = state.readLast.map(_.keys.toList)
+      ids = injectInitial(initial, topic)
       impl = new Impl(state, ids)
-      result <- IOUtil.withBackground(IOUtil.nonTerminating(consume), block(impl))
+      result <- IOUtil.withBackground(IOUtil.nonTerminating(consume), ready.get *> block(impl))
     } yield result
   }
 
@@ -72,18 +86,72 @@ object ResourceMirror extends Logging {
     }
   }
 
-  private def trackState[IO[_], T]
-    (state: IORef[IO, ResourceMap[T]], input: Stream[IO, Event[T]])(implicit
-      io: Sync[IO],
-      res: ObjectResource[T],
-    ): Stream[IO, Event[T]] = {
-    input.evalTap[IO, Unit] { event =>
-      val id = res.id(event.raw)
-      val desc = s"${Event.desc(event)}($id, v${res.version(event.raw).getOrElse("")})"
-      io.delay(logger.debug("[{}] Updating state for: {}", res.kindDescription, desc))
-    }.evalTap {
-      case Event.Deleted(t) => state.update_(s => s.removed(res.id(t)))
-      case Event.Updated(t) => state.update_(s => s.updated(res.id(t), ResourceState.of(t)))
+  private def trackState[IO[_], T](
+    state: IORef[IO, ResourceMap[T]],
+    ready: Deferred[IO, Unit],
+    input: Stream[IO, StateChange[T]]
+  )(implicit
+    io: Sync[IO],
+    res: ObjectResource[T],
+  ): Stream[IO, ResourceChange[T]] = {
+
+    def logChange(change: ResourceChange[T]) = {
+      val id = res.id(change.raw)
+      val desc = s"${StateChange.desc(change)}($id, v${res.version(change.raw).getOrElse("")})"
+      io.delay(logger.debug("[{}] Applying {}", res.kindDescription, desc))
     }
+
+    input.evalMap {
+      case reset: StateChange.ResetState[T] => {
+        for {
+          _ <- io.delay(logger.info("[{}]: Resetting state with {} resources", res.kindDescription, reset.all.size))
+          changes <- resetState(state, reset)
+          _ <- changes.traverse_(logChange)
+          _ <- ready.complete(())
+        } yield Chunk.seq(changes)
+      }
+      case change: ResourceChange[T] => {
+        for {
+          _ <- logChange(change)
+          _ <- change match {
+            case StateChange.Deleted(t) => state.update_(s => s.removed(res.id(t)))
+            case StateChange.Updated(t) => state.update_(s => s.updated(res.id(t), ResourceState.of(t)))
+          }
+        } yield Chunk.singleton(change)
+      }
+    }.flatMap(Stream.chunk)
+  }
+
+  // Reset state and emit minimal changes (i.e. only resources which actually changed)
+  private def resetState[IO[_], T](
+    state: IORef[IO, ResourceMap[T]],
+    reset: ResetState[T]
+  )(implicit
+    io: Sync[IO],
+    res: ObjectResource[T],
+  ): IO[List[ResourceChange[T]]] = {
+    val newState: ResourceMap[T] = reset.all.map(r => (Id.of(r), ResourceState.of(r))).toMap
+    val doReconcile = state.modify { prevState =>
+      val allIds = (prevState.keys ++ newState.keys).toSet
+      val changes: List[ResourceChange[T]] = allIds.toList.flatMap[ResourceChange[T]] { id =>
+        (prevState.get(id), newState.get(id)) match {
+          case (None, Some(current)) => List(StateChange.Updated(current.raw))
+          case (Some(prev), None) => List(StateChange.Deleted(prev.raw))
+          case (Some(prev), Some(current)) => {
+            if (res.version(prev.raw) === res.version(current.raw)) {
+              Nil
+            } else {
+              List(StateChange.Updated(current.raw))
+            }
+          }
+          case (None, None) => Nil // impossible, but humor the compiler
+        }
+      }
+      io.pure((newState, changes))
+    }
+
+    for {
+      changes <- doReconcile
+    } yield changes
   }
 }

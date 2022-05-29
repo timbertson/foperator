@@ -82,10 +82,10 @@ class Operations[IO[_], C, T](val client: C)
   }
 
   def mirror[R](block: ResourceMirror[IO, T] => IO[R])(implicit c: Async[IO]): IO[R] =
-    ResourceMirror[IO, C, T, R](client, ListOptions.all)(block)
+    ResourceMirror.apply[IO, C, T, R](client, ListOptions.all)(block)
 
   def mirrorFor[R](opts: ListOptions)(block: ResourceMirror[IO, T] => IO[R])(implicit c: Async[IO]): IO[R] =
-    ResourceMirror[IO, C, T, R](client, opts)(block)
+    ResourceMirror.apply[IO, C, T, R](client, opts)(block)
 
   def runReconciler(
     reconciler: Reconciler[IO, C, T],
