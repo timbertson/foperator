@@ -1,7 +1,7 @@
 package foperator
 
 import cats.effect.kernel.Outcome
-import cats.effect.testkit.TestControl
+import cats.effect.testkit.{TestContext, TestControl}
 import cats.effect.{Deferred, IO, Ref}
 import cats.implicits._
 import foperator.fixture.{Resource, ResourceSpec, ResourceStatus}
@@ -10,7 +10,7 @@ import foperator.testkit.{TestClient, TestClientEngineImpl, TestResource}
 import fs2.Stream
 import weaver.Expectations
 
-import scala.concurrent.duration.DurationInt
+import scala.concurrent.duration._
 
 class FallibleEngine extends TestClientEngineImpl[IO, Resource] {
   val error = Deferred.unsafe[IO, Throwable]
@@ -28,8 +28,9 @@ object ResourceMirrorTest extends SimpleTimedIOSuite with Logging {
 
   def takeUnique(expectedSize: Int, desc: String = "")(stream: Stream[IO, Id[Resource]]) = {
     stream.scan(Set.empty[Id[Resource]]){ (set, item) =>
-      logger.debug(s"takeUnique($expectedSize, $desc): saw element ${item}")
-      set.incl(item)
+      val newSet = set.incl(item)
+      logger.debug(s"takeUnique($expectedSize, $desc): saw element ${item} >> ${newSet}")
+      newSet
     }.find(_.size == expectedSize).compile.toList.map(_.flatten.sorted)
   }
 
@@ -157,7 +158,7 @@ object ResourceMirrorTest extends SimpleTimedIOSuite with Logging {
     }
   }
 
-  timedTest("cannot skip updates during concurrent subscription") {
+  test("cannot skip updates during concurrent subscription") {
     // if we subscribe concurrently to an item's creation, then either:
     // we observe the creation as part of the initial updates emitted, or
     // emitting of the item is delayed until our subscriber is installed,
@@ -174,12 +175,14 @@ object ResourceMirrorTest extends SimpleTimedIOSuite with Logging {
       _ <- expect(events === List(Id.of(f1), Id.of(f2))).failFast
     } yield ()
 
-    // run many times on test scheduler, to inject some intentional reordering of operations
     def loop(remaining: Int): IO[Expectations] = {
       if (remaining > 0) {
-        test >> loop(remaining-1)
+        val seed = TestContext().seed
+        IO.delay(logger.info(s"-- test start: $remaining (seed: ${seed})")) *>
+          TestControl.executeEmbed(test, seed = Some(seed)).timeout(20.seconds) *>
+          loop(remaining-1)
       } else IO.pure(succeed(()))
     }
-    loop(100)
+    loop(50)
   }
 }
