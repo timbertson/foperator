@@ -354,8 +354,8 @@ object DispatcherTest extends SimpleTimedIOSuite with Logging {
     val program = for {
       audit <- Audit[IO, Interaction]
       client <- TestClient[IO].client.map(_.withAudit[Resource] {
-        case Event.Updated(r) => audit.record(Updated(r.name))
-        case Event.Deleted(r) => audit.record(Deleted(r.name))
+        case StateChange.Updated(r) => audit.record(Updated(r.name))
+        case StateChange.Deleted(r) => audit.record(Deleted(r.name))
       })
       ctx = new Ctx(client, audit)
       dispatcherLoop = client.apply[Resource].mirror { mirror =>

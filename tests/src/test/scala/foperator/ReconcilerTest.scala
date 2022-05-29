@@ -26,8 +26,8 @@ trait ReconcilerTest { self: SimpleIOSuite =>
       for {
         baseClient <- TestClient[IO].client
         auditedClient = baseClient.withAudit[Resource] {
-          case Event.Updated(r) => audit.record(SetFinalizers(r.meta.finalizers))
-          case Event.Deleted(_) => IO.unit
+          case StateChange.Updated(r) => audit.record(SetFinalizers(r.meta.finalizers))
+          case StateChange.Deleted(_) => IO.unit
         }
         // reconcile always runs on a persisted resource (i.e. it updates, never creates) so make sure
         // the resource is persisted

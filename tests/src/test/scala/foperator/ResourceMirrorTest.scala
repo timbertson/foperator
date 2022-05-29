@@ -1,24 +1,22 @@
 package foperator
 
 import cats.effect.kernel.Outcome
-import cats.effect.testkit.TestControl
+import cats.effect.testkit.{TestContext, TestControl}
 import cats.effect.{Deferred, IO, Ref}
 import cats.implicits._
-import foperator.fixture.Resource
+import foperator.fixture.{Resource, ResourceSpec, ResourceStatus}
 import foperator.internal.Logging
-import foperator.testkit.{TestClient, TestClientEngineImpl}
+import foperator.testkit.{TestClient, TestClientEngineImpl, TestResource}
 import fs2.Stream
 import weaver.Expectations
 
-import scala.concurrent.duration.DurationInt
+import scala.concurrent.duration._
 
 class FallibleEngine extends TestClientEngineImpl[IO, Resource] {
   val error = Deferred.unsafe[IO, Throwable]
 
-  override def listAndWatch(c: TestClient[IO], opts: ListOptions): IO[(List[Resource], fs2.Stream[IO, Event[Resource]])] = {
-    super.listAndWatch(c, opts).map {
-      case (initial, updates) => (initial, updates.merge(Stream.eval(error.get.flatMap(IO.raiseError))))
-    }
+  override def listAndWatch(c: TestClient[IO], opts: ListOptions): fs2.Stream[IO, StateChange[Resource]] = {
+    super.listAndWatch(c, opts).merge(Stream.eval(error.get.flatMap(IO.raiseError)))
   }
 }
 
@@ -28,10 +26,11 @@ object ResourceMirrorTest extends SimpleTimedIOSuite with Logging {
   val f3 = Resource.fixture.copy(name = "f3")
   val f4 = Resource.fixture.copy(name = "f4")
 
-  def takeUnique(expectedSize: Int)(stream: Stream[IO, Id[Resource]]) = {
+  def takeUnique(expectedSize: Int, desc: String = "")(stream: Stream[IO, Id[Resource]]) = {
     stream.scan(Set.empty[Id[Resource]]){ (set, item) =>
-      logger.debug(s"takeUnique: saw element ${item}")
-      set.incl(item)
+      val newSet = set.incl(item)
+      logger.debug(s"takeUnique($expectedSize, $desc): saw element ${item} >> ${newSet}")
+      newSet
     }.find(_.size == expectedSize).compile.toList.map(_.flatten.sorted)
   }
 
@@ -105,13 +104,50 @@ object ResourceMirrorTest extends SimpleTimedIOSuite with Logging {
     }
   }
 
+  timedTest("synthesizes updates when the state is reset") {
+    ResourceMirror.forStateStream(Stream[IO, StateChange[TestResource[ResourceSpec, ResourceStatus]]](
+      StateChange.ResetState(Nil),
+      StateChange.Updated(f1),
+      StateChange.Updated(f3),
+      StateChange.ResetState(List(f1)),
+      StateChange.ResetState(List(f1, f2)),
+      StateChange.Updated(f4),
+    ) ++ Stream.never) { mirror =>
+      for {
+        ids <- mirror.ids.take(5).compile.toList
+        finalIds <- mirror.all.map(_.keySet)
+      } yield {
+        expect.all(
+          ids === List(
+            f1.id, f3.id, // update
+            f3.id, // delete (missing from state)
+            f2.id, // add (present in state)
+            f4.id
+          ),
+          finalIds === Set(f1.id, f2.id, f4.id)
+        )
+      }
+    }
+  }
+
+  timedTest("repeatedly invokes listAndWatch on EOF") {
+    ResourceMirror.forStateStream(Stream[IO, StateChange[TestResource[ResourceSpec, ResourceStatus]]](
+      StateChange.ResetState(List()),
+      StateChange.Updated(f1),
+    )) { mirror =>
+      for {
+        ids <- mirror.ids.take(10).compile.toList
+      } yield expect(ids.length === 10)
+    }
+  }
+
   timedTest("supports multiple concurrent ID consumers") {
     for {
       ops <- TestClient[IO].client.map(_.apply[Resource])
       fiber <- ops.mirror { mirror =>
         (
-          takeUnique(2)(mirror.ids),
-          takeUnique(2)(mirror.ids)
+          takeUnique(2, "a")(mirror.ids),
+          takeUnique(2, "b")(mirror.ids)
         ).parTupled
       }.start
       _ <- ops.write(f1) >> ops.write(f2)
@@ -122,7 +158,7 @@ object ResourceMirrorTest extends SimpleTimedIOSuite with Logging {
     }
   }
 
-  timedTest("cannot skip updates during concurrent subscription") {
+  test("cannot skip updates during concurrent subscription") {
     // if we subscribe concurrently to an item's creation, then either:
     // we observe the creation as part of the initial updates emitted, or
     // emitting of the item is delayed until our subscriber is installed,
@@ -139,12 +175,14 @@ object ResourceMirrorTest extends SimpleTimedIOSuite with Logging {
       _ <- expect(events === List(Id.of(f1), Id.of(f2))).failFast
     } yield ()
 
-    // run many times on test scheduler, to inject some intentional reordering of operations
     def loop(remaining: Int): IO[Expectations] = {
       if (remaining > 0) {
-        test >> loop(remaining-1)
+        val seed = TestContext().seed
+        IO.delay(logger.info(s"-- test start: $remaining (seed: ${seed})")) *>
+          TestControl.executeEmbed(test, seed = Some(seed)).timeout(20.seconds) *>
+          loop(remaining-1)
       } else IO.pure(succeed(()))
     }
-    loop(100)
+    loop(50)
   }
 }

@@ -6,14 +6,15 @@ import cats.implicits._
 import foperator._
 import foperator.internal.{IORef, Logging}
 import foperator.types._
+import fs2.Stream
 import fs2.concurrent.Topic
 
 import java.time.Instant
 
 class TestClient[IO[_]](
   state: IORef[IO, TestClient.State],
-  val topic: Topic[IO, Event[TestClient.Entry]],
-  val auditors: List[Event[TestClient.Entry] => IO[Unit]],
+  val topic: Topic[IO, ResourceChange[TestClient.Entry]],
+  val auditors: List[ResourceChange[TestClient.Entry] => IO[Unit]],
 )(implicit io: Async[IO]) extends Client[IO, TestClient[IO]] with Logging {
 
   override def apply[T]
@@ -33,15 +34,15 @@ class TestClient[IO[_]](
 
   def modifyState_(f: TestClient.State => IO[TestClient.State]): IO[Unit] = modifyState(s => f(s).map(r => (r, ())))
 
-  private [foperator] def publish(update: Event[TestClient.Entry]) = {
+  private [foperator] def publish(update: ResourceChange[TestClient.Entry]) = {
     auditors.traverse_(audit => audit(update)) >>
-      io.delay(logger.debug("publishing {}({})", Event.desc(update), update.raw._1.id)) >>
+      io.delay(logger.debug("publishing {}({})", StateChange.desc(update), update.raw._1.id)) >>
       topic.publish1(update)
   }
 
-  def withAudit[T](audit: Event[T] => IO[Unit])(implicit res: ObjectResource[T]): TestClient[IO] = {
-    val auditor: Event[TestClient.Entry] => IO[Unit] = { entry =>
-      ResourceKey.castEvent(entry).fold(io.unit)(audit)
+  def withAudit[T](audit: ResourceChange[T] => IO[Unit])(implicit res: ObjectResource[T]): TestClient[IO] = {
+    val auditor: ResourceChange[TestClient.Entry] => IO[Unit] = { entry =>
+      ResourceKey.castChange(entry).fold(io.unit)(audit)
     }
     new TestClient(state, topic, auditor :: auditors)
   }
@@ -57,7 +58,7 @@ object TestClient {
     def client: IO[TestClient[IO]] = {
       for {
         state <- IORef[IO].of(Map.empty: State)
-        topic <- Topic[IO, Event[(ResourceKey, Any)]]
+        topic <- Topic[IO, ResourceChange[(ResourceKey, Any)]]
       } yield new TestClient[IO](state, topic, Nil)
     }
   }
@@ -94,10 +95,10 @@ object ResourceKey {
     }
   }
 
-  def castEvent[T](event: Event[TestClient.Entry])(implicit res: HasKind[T]): Option[Event[T]] = {
+  def castChange[T](event: ResourceChange[TestClient.Entry])(implicit res: HasKind[T]): Option[ResourceChange[T]] = {
     event match {
-      case Event.Updated((k, v)) => cast[T](k, v).map(Event.Updated.apply)
-      case Event.Deleted((k, v)) => cast[T](k, v).map(Event.Deleted.apply)
+      case StateChange.Updated((k, v)) => cast[T](k, v).map(StateChange.Updated.apply)
+      case StateChange.Deleted((k, v)) => cast[T](k, v).map(StateChange.Deleted.apply)
     }
   }
 }
@@ -127,7 +128,7 @@ class TestClientEngineImpl[IO[_], T]
       val id = res.id(t)
       val key = ResourceKey.id(id)
 
-      val update: IO[(TestClient.State, Option[Event[TestClient.Entry]])] = {
+      val update: IO[(TestClient.State, Option[ResourceChange[TestClient.Entry]])] = {
         val existing = _get(stateMap, id)
         (existing, res.version(t)) match {
           case (Some(_), None) => io.raiseError(new RuntimeException(s"Attempted to create an existing resource: $id"))
@@ -135,7 +136,7 @@ class TestClientEngineImpl[IO[_], T]
           case (None, None) => {
             logger.debug("[{}] creating", res.id(t))
             val written = _nextVersion(t)
-            io.pure((stateMap.updated(key, written), Some(Event.Updated((key, written)))))
+            io.pure((stateMap.updated(key, written), Some(StateChange.Updated((key, written)))))
           }
           case (Some(existing), Some(updatingVersion)) => { // update
             if (!res.version(existing).contains_(updatingVersion)) {
@@ -143,7 +144,7 @@ class TestClientEngineImpl[IO[_], T]
                 new RuntimeException(s"version conflict (stored: ${res.version(existing)}, writing: ${res.version(t)})"))))
             } else if (res.isSoftDeleted(t) && res.finalizers(t).isEmpty) {
               logger.debug("[{}] soft-deleted resource has no remaining finalizers; deleting it", res.id(t))
-              io.pure((stateMap.removed(key), Some(Event.Deleted((key, t)))))
+              io.pure((stateMap.removed(key), Some(StateChange.Deleted((key, t)))))
             } else if (existing === t) {
               // we don't emit an event on a no-op change, otherwise we'd reconcile indefinitely
               logger.debug("[{}] no-op update", res.id(t))
@@ -151,7 +152,7 @@ class TestClientEngineImpl[IO[_], T]
             } else {
               val written = _nextVersion(t)
               logger.debug("[{}] updated (new version: {})", res.id(t), res.version(written))
-              io.pure((stateMap.updated(key, written), Some(Event.Updated((key, written)))))
+              io.pure((stateMap.updated(key, written), Some(StateChange.Updated((key, written)))))
             }
           }
         }
@@ -197,7 +198,7 @@ class TestClientEngineImpl[IO[_], T]
         case None => io.raiseError(_notFound)
         case Some(existing) =>
           if (res.finalizers(existing).isEmpty) {
-            val event: Event[TestClient.Entry] = Event.Deleted((key, existing))
+            val event: ResourceChange[TestClient.Entry] = StateChange.Deleted((key, existing))
             c.publish(event).as(stateMap.removed(key))
           } else {
             if (res.isSoftDeleted(existing)) {
@@ -206,7 +207,7 @@ class TestClientEngineImpl[IO[_], T]
             } else {
               clock.realTime.flatMap { time =>
                 val updated = res.softDeletedAt(existing, Instant.ofEpochSecond(time.toSeconds))
-                val event: Event[TestClient.Entry] = Event.Updated((key, updated))
+                val event: ResourceChange[TestClient.Entry] = StateChange.Updated((key, updated))
                 c.publish(event).as(stateMap.updated(key, updated))
               }
             }
@@ -215,11 +216,11 @@ class TestClientEngineImpl[IO[_], T]
     }
   }
 
-  override def listAndWatch(c: TestClient[IO], opts: ListOptions): IO[(List[T], fs2.Stream[IO, Event[T]])] = {
+  override def listAndWatch(c: TestClient[IO], opts: ListOptions): fs2.Stream[IO, StateChange[T]] = {
     if (opts != ListOptions.all) {
       logger.warn(s"Ignoring $opts (not implemented)")
     }
-    for {
+    Stream.eval(for {
       resource <- c.topic.subscribeAwait(64).allocated
       stateMap <- c.readState
     } yield {
@@ -228,7 +229,9 @@ class TestClientEngineImpl[IO[_], T]
       }.toList
       logger.debug("listAndWatch returning {} initial items", initial.length)
       val (updates, release) = resource
-      (initial, updates.mapFilter(ResourceKey.castEvent[T]).onFinalize(release))
-    }
+      (Stream(StateChange.ResetState(initial)) ++
+        updates.mapFilter(ResourceKey.castChange[T])
+      ).onFinalize(release)
+    }).flatten
   }
 }
