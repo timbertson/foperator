@@ -88,13 +88,11 @@ object ResourceMirror extends Logging {
         case other => Pull.raiseError[IO](new RuntimeException(s"Unexpected initial listAndWatch element: ${other}"))
       }.stream
 
-      // maintain `state` as updates flow through, then publish changed IDs
-      trackedUpdates = trackState(state, updates).map(change => res.id(change.raw))
-      consume = trackedUpdates.through(topic.publish).compile.drain
+      // maintain `state` as updates flow through, then publish changed IDs to all subscribers
+      consume = trackState(state, updates).map(change => res.id(change.raw)).through(topic.publish).compile.drain
 
-      initial = state.get.map(_.keys.toList)
-      ids = injectInitial(initial, topic)
-      impl = new Impl(state, ids)
+      getExtantIds = state.get.map(_.keys.toList)
+      impl = new Impl(state, injectInitial(getExtantIds, topic))
       result <- IOUtil.withBackground(IOUtil.nonTerminating(consume), ready.get *> block(impl))
     } yield result
   }
@@ -124,22 +122,19 @@ object ResourceMirror extends Logging {
     }
 
     input.evalMap {
-      case reset: StateChange.ResetState[T] => {
-        for {
-          _ <- io.delay(logger.info("[{}]: Resetting state with {} resources", res.kindDescription, reset.all.size))
-          changes <- resetState(state, reset)
-          _ <- changes.traverse_(logChange)
-        } yield Chunk.seq(changes)
-      }
-      case change: ResourceChange[T] => {
-        for {
-          _ <- logChange(change)
-          _ <- change match {
-            case StateChange.Deleted(t) => state.update(s => s.removed(res.id(t)))
-            case StateChange.Updated(t) => state.update(s => s.updated(res.id(t), ResourceState.of(t)))
-          }
-        } yield Chunk.singleton(change)
-      }
+      case reset: StateChange.ResetState[T] => for {
+        _ <- io.delay(logger.info("[{}]: Resetting state with {} resources", res.kindDescription, reset.all.size))
+        changes <- resetState(state, reset)
+        _ <- changes.traverse_(logChange)
+      } yield Chunk.seq(changes)
+
+      case change: ResourceChange[T] => for {
+        _ <- logChange(change)
+        _ <- change match {
+          case StateChange.Deleted(t) => state.update(s => s.removed(res.id(t)))
+          case StateChange.Updated(t) => state.update(s => s.updated(res.id(t), ResourceState.of(t)))
+        }
+      } yield Chunk.singleton(change)
     }.flatMap(Stream.chunk)
   }
 
@@ -152,7 +147,7 @@ object ResourceMirror extends Logging {
     res: ObjectResource[T],
   ): IO[List[ResourceChange[T]]] = {
     val newState: ResourceMap[T] = reset.all.map(r => (Id.of(r), ResourceState.of(r))).toMap
-    val doReconcile = state.modify { prevState =>
+    state.modify { prevState =>
       val allIds = (prevState.keys ++ newState.keys).toSet
       val changes: List[ResourceChange[T]] = allIds.toList.flatMap[ResourceChange[T]] { id =>
         (prevState.get(id), newState.get(id)) match {
@@ -170,9 +165,5 @@ object ResourceMirror extends Logging {
       }
       (newState, changes)
     }
-
-    for {
-      changes <- doReconcile
-    } yield changes
   }
 }
