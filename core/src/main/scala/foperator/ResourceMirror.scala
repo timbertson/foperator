@@ -2,10 +2,10 @@ package foperator
 
 import cats.Monad
 import cats.effect.kernel.Deferred
-import cats.effect.{Async, Sync}
+import cats.effect.{Async, Ref, Sync}
 import cats.implicits._
 import foperator.StateChange.ResetState
-import foperator.internal.{IORef, IOUtil, Logging}
+import foperator.internal.{IOUtil, Logging}
 import foperator.types._
 import fs2.concurrent.Topic
 import fs2.{Chunk, Pull, Stream}
@@ -32,10 +32,10 @@ object ResourceMirror extends Logging {
 
   private class Impl[IO[_], T](
     // TODO could this just be a Ref?
-    state: IORef[IO, ResourceMap[T]],
+    state: Ref[IO, ResourceMap[T]],
     idStream: Stream[IO, Id[T]],
   )(implicit io: Monad[IO]) extends ResourceMirror[IO, T] {
-    override def all: IO[Map[Id[T], ResourceState[T]]] = state.readLast
+    override def all: IO[Map[Id[T], ResourceState[T]]] = state.get
     override def active: IO[Map[Id[T], T]] = io.map(all)(_.mapFilter(ResourceState.active))
     override def allValues: IO[List[ResourceState[T]]] = all.map(_.values.toList)
     override def activeValues: IO[List[T]] = active.map(_.values.toList)
@@ -68,7 +68,7 @@ object ResourceMirror extends Logging {
     }).repeat
 
     for {
-      state <- IORef[IO].of(Map.empty[Id[T], ResourceState[T]])
+      state <- Ref[IO].of(Map.empty[Id[T], ResourceState[T]])
       ready <- Deferred[IO, Unit]
       topic <- Topic[IO, Id[T]]
       _ <- io.delay(logger.info("[{}]: Starting ResourceMirror", res.kindDescription))
@@ -92,7 +92,7 @@ object ResourceMirror extends Logging {
       trackedUpdates = trackState(state, updates).map(change => res.id(change.raw))
       consume = trackedUpdates.through(topic.publish).compile.drain
 
-      initial = state.readLast.map(_.keys.toList)
+      initial = state.get.map(_.keys.toList)
       ids = injectInitial(initial, topic)
       impl = new Impl(state, ids)
       result <- IOUtil.withBackground(IOUtil.nonTerminating(consume), ready.get *> block(impl))
@@ -110,7 +110,7 @@ object ResourceMirror extends Logging {
   }
 
   private def trackState[IO[_], T](
-    state: IORef[IO, ResourceMap[T]],
+    state: Ref[IO, ResourceMap[T]],
     input: Stream[IO, StateChange[T]]
   )(implicit
     io: Sync[IO],
@@ -135,8 +135,8 @@ object ResourceMirror extends Logging {
         for {
           _ <- logChange(change)
           _ <- change match {
-            case StateChange.Deleted(t) => state.update_(s => s.removed(res.id(t)))
-            case StateChange.Updated(t) => state.update_(s => s.updated(res.id(t), ResourceState.of(t)))
+            case StateChange.Deleted(t) => state.update(s => s.removed(res.id(t)))
+            case StateChange.Updated(t) => state.update(s => s.updated(res.id(t), ResourceState.of(t)))
           }
         } yield Chunk.singleton(change)
       }
@@ -145,7 +145,7 @@ object ResourceMirror extends Logging {
 
   // Reset state and emit minimal changes (i.e. only resources which actually changed)
   private def resetState[IO[_], T](
-    state: IORef[IO, ResourceMap[T]],
+    state: Ref[IO, ResourceMap[T]],
     reset: ResetState[T]
   )(implicit
     io: Sync[IO],
@@ -168,7 +168,7 @@ object ResourceMirror extends Logging {
           case (None, None) => Nil // impossible, but humor the compiler
         }
       }
-      io.pure((newState, changes))
+      (newState, changes)
     }
 
     for {
