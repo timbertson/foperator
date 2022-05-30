@@ -8,7 +8,7 @@ import foperator.StateChange.ResetState
 import foperator.internal.{IORef, IOUtil, Logging}
 import foperator.types._
 import fs2.concurrent.Topic
-import fs2.{Chunk, Stream}
+import fs2.{Chunk, Pull, Stream}
 
 /**
  * ResourceMirror provides:
@@ -52,10 +52,18 @@ object ResourceMirror extends Logging {
     forStateStream(listAndWatch)(block)
   }
 
+  private def pullOfStream[IO[_], O](s: Stream[IO, O]): Pull[IO, O, Unit] = {
+    // pass entire stream through a pull. Seems a bit odd there's no builtin for this.
+    s.pull.uncons.flatMap {
+      case None           => Pull.done
+      case Some((chunk, tl)) => Pull.output(chunk) >> pullOfStream(tl)
+    }
+  }
+
   private [foperator] def forStateStream[IO[_], C, T, R](listAndWatch: Stream[IO, StateChange[T]])(block: ResourceMirror[IO, T] => IO[R])
     (implicit io: Async[IO], res: ObjectResource[T]): IO[R] = {
     // listAndWatch can return EOF after a while; keep running it forever
-    val updates = (listAndWatch ++ Stream.evalUnChunk {
+    val listAndWatchForever = (listAndWatch ++ Stream.evalUnChunk {
       io.delay(logger.info("listAndWatch ended; restarting")).as(Chunk.empty)
     }).repeat
 
@@ -65,8 +73,23 @@ object ResourceMirror extends Logging {
       topic <- Topic[IO, Id[T]]
       _ <- io.delay(logger.info("[{}]: Starting ResourceMirror", res.kindDescription))
 
+      updates = listAndWatchForever.pull.uncons1.flatMap {
+        // we use the head of the stream to set the initial state, and emit subsequent state changes
+        case Some((head @ StateChange.ResetState(_), tail)) => {
+          val setup = Pull.eval[IO, Unit] {
+            for {
+              _ <- io.delay(logger.info(s"[{}]: Initial state contains {} items", res.kindDescription, head.all.size))
+              _ <- resetState(state, head)
+              _ <- ready.complete(())
+            } yield ()
+          }
+          setup >> pullOfStream(tail)
+        }
+        case other => Pull.raiseError[IO](new RuntimeException(s"Unexpected initial listAndWatch element: ${other}"))
+      }.stream
+
       // maintain `state` as updates flow through, then publish changed IDs
-      trackedUpdates = trackState(state, ready, updates).map(change => res.id(change.raw))
+      trackedUpdates = trackState(state, updates).map(change => res.id(change.raw))
       consume = trackedUpdates.through(topic.publish).compile.drain
 
       initial = state.readLast.map(_.keys.toList)
@@ -88,7 +111,6 @@ object ResourceMirror extends Logging {
 
   private def trackState[IO[_], T](
     state: IORef[IO, ResourceMap[T]],
-    ready: Deferred[IO, Unit],
     input: Stream[IO, StateChange[T]]
   )(implicit
     io: Sync[IO],
@@ -107,7 +129,6 @@ object ResourceMirror extends Logging {
           _ <- io.delay(logger.info("[{}]: Resetting state with {} resources", res.kindDescription, reset.all.size))
           changes <- resetState(state, reset)
           _ <- changes.traverse_(logChange)
-          _ <- ready.complete(())
         } yield Chunk.seq(changes)
       }
       case change: ResourceChange[T] => {

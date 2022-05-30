@@ -1,9 +1,9 @@
 package foperator
 
 
-sealed trait StateChange[+T]
+sealed trait StateChange[T]
 
-sealed trait ResourceChange[+T] extends StateChange[T] {
+sealed trait ResourceChange[T] extends StateChange[T] {
   def raw: T
 }
 
