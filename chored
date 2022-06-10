@@ -8,7 +8,7 @@ _main() {
 	fi
 	if [ -z "${DENO:-}" ]; then
 		CHORED_CACHE="${CHORED_CACHE:-$HOME/.cache/chored}"
-		DENO_VERSION="${DENO_VERSION:-1.18.0}"
+		DENO_VERSION="${DENO_VERSION:-1.22.0}"
 
 		PLATFORM_ARCH=""
 		# Add more as needed
@@ -33,13 +33,9 @@ _main() {
 		fi
 	fi
 
-	DENO_ARGV=(--unstable --allow-all)
+	DENO_ARGV=(--unstable --allow-all --check=local)
 
 	here="$PWD"
-	LOCKFILE="choredefs/.lock.json"
-	if [ -e "$LOCKFILE" ]; then
-		DENO_ARGV+=(--lock="$LOCKFILE")
-	fi
 
 	if [ -n "${DENO_ARGS:-}" ]; then
 		DENO_ARGV+=($DENO_ARGS)
@@ -50,9 +46,20 @@ _main() {
 		exec "$DENO" "$@"
 	fi
 
-	CHORED_MAIN_FALLBACK='https://raw.githubusercontent.com/timbertson/chored/c89447a118d8e2150de789a603716a87bd3d5559/lib/main.ts'
+	CHORED_MAIN_FALLBACK='https://raw.githubusercontent.com/timbertson/chored/4adfc96a523295642e0b5b0404eadc776b59202f/lib/main.ts'
+	CHORED_MAIN="${CHORED_MAIN:-$CHORED_MAIN_FALLBACK}"
 
-	exec "$DENO" run "${DENO_ARGV[@]}" "${CHORED_MAIN:-$CHORED_MAIN_FALLBACK}" "$@"
+	if [ "${1:-}" = "--local" ]; then
+		shift
+		DENO_ARGV+=(--import-map <("$DENO" run "${DENO_ARGV[@]}" "$CHORED_MAIN" __local))
+	else
+		LOCKFILE="choredefs/lock.json"
+		if [ -e "$LOCKFILE" ]; then
+			DENO_ARGV+=(--lock="$LOCKFILE")
+		fi
+	fi
+
+	exec "$DENO" run "${DENO_ARGV[@]}" "$CHORED_MAIN" "$@"
 
 }
 

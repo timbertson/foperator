@@ -5,6 +5,7 @@
 .github/workflows/ci.yml linguist-generated chored-generated
 .github/workflows/self-update.yml linguist-generated chored-generated
 chored linguist-generated chored-generated
+choredefs/local-deps.json linguist-generated chored-generated
 project/build.properties linguist-generated chored-generated
 project/sonatype.sbt linguist-generated chored-generated
 project/src/main/scala/PublishSettings.scala linguist-generated chored-generated

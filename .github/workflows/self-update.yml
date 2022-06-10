@@ -14,4 +14,4 @@ jobs:
         uses: timbertson/chored-setup@v1
       - run: ./chored selfUpdate --json "$OPTS"
         env:
-          OPTS: '{"mode":"pr"}'
+          OPTS: '{"mode":"pr","githubToken":"${{ secrets.GITHUB_TOKEN }}"}'
