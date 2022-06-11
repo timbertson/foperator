@@ -1,3 +1,3 @@
-import { defaultDockerOptions, default as Scala } from 'https://raw.githubusercontent.com/timbertson/chored-timbertson/b5408988592571056b0731c74dfb6eda399c7b89/lib/scala.ts#main'
+import { defaultDockerOptions, default as Scala } from 'https://raw.githubusercontent.com/timbertson/chored-timbertson/9ce6bcd27906f824e8cbfb4e7f326856e93e53ee/lib/scala.ts#main'
 
 export default Scala({ repo: 'foperator' })

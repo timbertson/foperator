@@ -1,6 +1,0 @@
-{
-  "imports": {
-    "https://raw.githubusercontent.com/timbertson/chored-timbertson/b5408988592571056b0731c74dfb6eda399c7b89/": "../chored-timbertson/",
-    "https://raw.githubusercontent.com/timbertson/chored/c234db6eef6c16bc9076f2425bed1c56beaf42af/": "../chored/"
-  }
-}
