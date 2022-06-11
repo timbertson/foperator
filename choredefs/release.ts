@@ -1,4 +1,4 @@
-import { run } from 'https://raw.githubusercontent.com/timbertson/chored/dbddf21a43be2d134a4f5d491004f3282b1a07a7/lib/cmd.ts#main'
+import { run } from 'https://raw.githubusercontent.com/timbertson/chored/cccf7a64322c34ff3d949f5e8acf55a26e803075/lib/cmd.ts#main'
 
 export default async function(opts: {}) {
 	await scala2()
