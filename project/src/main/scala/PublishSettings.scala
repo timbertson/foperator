@@ -14,4 +14,6 @@ object ScalaProject {
 		publishMavenStyle := true,
 		Test / publishArtifact := false,
 	)
+
+
 }
