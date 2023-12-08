@@ -89,7 +89,7 @@ lazy val kclient = (project in file("backends/kubernetes-client"))
   .settings(
     name := "foperator-backend-kubernetes-client",
     libraryDependencies ++= Seq(
-      "com.goyeau" %% "kubernetes-client" % "0.8.1",
+      "com.goyeau" %% "kubernetes-client" % "0.11.0",
     )
   ).dependsOn(core)
 
