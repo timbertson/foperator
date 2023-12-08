@@ -9,7 +9,7 @@ import foperator.backend.kubernetesclient.impl
 import foperator.types._
 import org.typelevel.log4cats.Logger
 
-import java.io.File
+import fs2.io.file.Path
 
 class KubernetesClient[IO[_] : Async](val underlying: client.KubernetesClient[IO])
   extends Client[IO, KubernetesClient[IO]] {
@@ -26,12 +26,12 @@ object KubernetesClient {
 
     def default: Resource[IO, KubernetesClient[IO]] = for {
       path <- Resource.eval(KubeconfigPath.fromEnv[IO])
-      client <- client.KubernetesClient[IO](KubeConfig.fromFile(new File(path)))
+      client <- client.KubernetesClient[IO](KubeConfig.fromFile(Path(path)))
     } yield wrap(client)
 
-    def apply(config: KubeConfig): Resource[IO, KubernetesClient[IO]] = client.KubernetesClient[IO](config).map(wrap)
+    def apply(config: KubeConfig[IO]): Resource[IO, KubernetesClient[IO]] = client.KubernetesClient[IO](config).map(wrap)
 
-    def apply(config: IO[KubeConfig]): Resource[IO, KubernetesClient[IO]] = client.KubernetesClient(config).map(wrap)
+    def apply(config: IO[KubeConfig[IO]]): Resource[IO, KubernetesClient[IO]] = client.KubernetesClient(config).map(wrap)
   }
 
   implicit def engine[IO[_] : Async, T<:HasMetadata, TList<:ListOf[T]]

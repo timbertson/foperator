@@ -143,7 +143,6 @@ object ResourceMirror extends Logging {
     state: Ref[IO, ResourceMap[T]],
     reset: ResetState[T]
   )(implicit
-    io: Sync[IO],
     res: ObjectResource[T],
   ): IO[List[ResourceChange[T]]] = {
     val newState: ResourceMap[T] = reset.all.map(r => (Id.of(r), ResourceState.of(r))).toMap
