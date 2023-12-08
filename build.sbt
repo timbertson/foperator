@@ -4,7 +4,7 @@ val fs2Version = "3.2.5"
 val catsEffectVersion = "3.3.7"
 val logback = "ch.qos.logback" % "logback-classic" % "1.2.3"
 
-val scala3Version = "3.1.1"
+val scala3Version = "3.3.1"
 val scala2Version = "2.13.7"
 
 val crossScala3 = Seq(
