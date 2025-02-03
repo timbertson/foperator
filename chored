@@ -12,13 +12,23 @@ _main() {
 
 		PLATFORM_ARCH=""
 		# Add more as needed
-		case "$(uname -sm)" in
+		UNAME="$(uname -sm)"
+		case "$UNAME" in
 			"Darwin x86_64")
 				PLATFORM_ARCH="x86_64-apple-darwin"
 				;;
 
 			"Linux x86_64")
 				PLATFORM_ARCH="x86_64-unknown-linux-gnu"
+				;;
+
+			"Darwin arm64")
+				PLATFORM_ARCH="aarch64-apple-darwin"
+				;;
+
+			*)
+				echo >&2 "Error: Unknown platform/arch: $UNAME"
+				exit 1
 				;;
 		esac
 		[ -n "$PLATFORM_ARCH" ]
@@ -42,7 +52,7 @@ _main() {
 		exec "$DENO" "$@"
 	fi
 
-	CHORED_MAIN_FALLBACK='https://raw.githubusercontent.com/timbertson/chored/cccf7a64322c34ff3d949f5e8acf55a26e803075/lib/main.ts'
+	CHORED_MAIN_FALLBACK='https://raw.githubusercontent.com/timbertson/chored/a70d670bea44c243554373f115513775f3ed6231/lib/main.ts'
 	CHORED_MAIN="${CHORED_MAIN:-$CHORED_MAIN_FALLBACK}"
 
 	if [ "${1:-}" = "--local" ]; then
