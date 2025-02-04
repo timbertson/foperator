@@ -7,6 +7,7 @@ import xerial.sbt.Sonatype.SonatypeKeys._
 object ScalaProject {
 	val hiddenProjectSettings = Seq(
 		publish / skip := true,
+		publishTo := None,
 	)
 
 	def publicProjectSettings = Seq(

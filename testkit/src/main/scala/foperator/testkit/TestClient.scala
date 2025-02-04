@@ -220,18 +220,15 @@ class TestClientEngineImpl[IO[_], T]
     if (opts != ListOptions.all) {
       logger.warn(s"Ignoring $opts (not implemented)")
     }
-    Stream.eval(for {
-      resource <- c.topic.subscribeAwait(64).allocated
-      stateMap <- c.readState
-    } yield {
-      val initial = stateMap.flatMap {
-        case (k, v) => ResourceKey.cast[T](k, v).toList
-      }.toList
-      logger.debug("listAndWatch returning {} initial items", initial.length)
-      val (updates, release) = resource
-      (Stream(StateChange.ResetState(initial)) ++
-        updates.mapFilter(ResourceKey.castChange[T])
-      ).onFinalize(release)
-    }).flatten
+    Stream.resource(c.topic.subscribeAwait(64)).flatMap { updateStream =>
+      val resetState: Stream[IO, StateChange[T]] = Stream.eval(c.readState).map { initialState =>
+        logger.debug("listAndWatch returning {} initial items", initialState.size)
+        val allKeys = initialState.flatMap {
+          case (k, v) => ResourceKey.cast[T](k, v).toList
+        }.toList
+        StateChange.ResetState(allKeys)
+      }
+      resetState ++ updateStream.mapFilter(ResourceKey.castChange[T])
+    }
   }
 }
